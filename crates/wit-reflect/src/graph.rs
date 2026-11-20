@@ -7,7 +7,10 @@ use crate::types::{Type, TypeDef, TypeDefKind, TypeKey};
 fn reference_to(key: TypeKey, definition: &TypeDef) -> Type {
     match definition.kind() {
         TypeDefKind::Resource => Type::Own(key),
-        TypeDefKind::Record(_) | TypeDefKind::Variant(_) | TypeDefKind::Enum(_) => Type::Named(key),
+        TypeDefKind::Record(_)
+        | TypeDefKind::Variant(_)
+        | TypeDefKind::Enum(_)
+        | TypeDefKind::RecordOfCases { .. } => Type::Named(key),
     }
 }
 

@@ -166,6 +166,16 @@ pub(crate) enum TypeDefKind {
     Enum(Vec<EnumCase>),
     /// Functions are attached by the schema that exports the resource.
     Resource,
+    /// An enum that also carries computed fields.
+    ///
+    /// A WIT variant has no sibling fields, so resolution defines a variant
+    /// for the cases and a record holding `fields` plus that variant.
+    RecordOfCases {
+        fields: Vec<Field>,
+        /// The record field that holds the cases.
+        cases_field: &'static str,
+        cases: Vec<Case>,
+    },
 }
 
 impl TypeDef {
@@ -185,6 +195,29 @@ impl TypeDef {
     #[must_use]
     pub fn enumeration(name: &'static str, cases: Vec<EnumCase>) -> Self {
         Self::new(name, TypeDefKind::Enum(cases))
+    }
+
+    /// An enum exported as a record of `fields` and its cases.
+    ///
+    /// Use it when an enum's contract includes a value computed from the whole
+    /// enum, such as its `Display` message. The cases are defined as a variant
+    /// named `<record>-<cases_field>`, or as an `enum` when none carries data,
+    /// and the record refers to it through the field `cases_field`.
+    #[must_use]
+    pub fn record_of_cases(
+        name: &'static str,
+        fields: Vec<Field>,
+        cases_field: &'static str,
+        cases: Vec<Case>,
+    ) -> Self {
+        Self::new(
+            name,
+            TypeDefKind::RecordOfCases {
+                fields,
+                cases_field,
+                cases,
+            },
+        )
     }
 
     /// A `resource`. The schema that declares it lists its methods.

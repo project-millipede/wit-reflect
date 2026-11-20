@@ -334,6 +334,23 @@ fn check_definitions(graph: &TypeGraph, placement: &Placement<'_>, errors: &mut 
                 let case_names = cases.iter().map(|case| case.name);
                 check_members(rust_type, "case", case_names, errors);
             }
+            TypeDefKind::RecordOfCases {
+                fields,
+                cases_field,
+                cases,
+            } => {
+                // The field holding the cases is a member of the record too.
+                let field_names = fields.iter().map(|field| field.name).chain([*cases_field]);
+                check_members(rust_type, "field", field_names, errors);
+                for field in fields {
+                    check_value_type(rust_type, &field.ty, errors);
+                }
+                let case_names = cases.iter().map(|case| case.name);
+                check_members(rust_type, "case", case_names, errors);
+                for case in cases {
+                    check_payload(rust_type, case, errors);
+                }
+            }
             // A resource has no members; its functions are checked with the
             // interface that declares them.
             TypeDefKind::Resource => {}
@@ -604,16 +621,22 @@ fn collect_function_references(function: &Function, pending: &mut Vec<TypeKey>) 
 fn collect_references(definition: &TypeDef, pending: &mut Vec<TypeKey>) {
     match definition.kind() {
         TypeDefKind::Record(fields) => collect_field_references(fields, pending),
-        TypeDefKind::Variant(cases) => {
-            for case in cases {
-                match &case.payload {
-                    Payload::None => {}
-                    Payload::Type(ty) => collect_type_references(ty, pending),
-                    Payload::Record { fields, .. } => collect_field_references(fields, pending),
-                }
-            }
+        TypeDefKind::Variant(cases) => collect_case_references(cases, pending),
+        TypeDefKind::RecordOfCases { fields, cases, .. } => {
+            collect_field_references(fields, pending);
+            collect_case_references(cases, pending);
         }
         TypeDefKind::Enum(_) | TypeDefKind::Resource => {}
+    }
+}
+
+fn collect_case_references(cases: &[Case], pending: &mut Vec<TypeKey>) {
+    for case in cases {
+        match &case.payload {
+            Payload::None => {}
+            Payload::Type(ty) => collect_type_references(ty, pending),
+            Payload::Record { fields, .. } => collect_field_references(fields, pending),
+        }
     }
 }
 
@@ -911,16 +934,22 @@ impl InterfaceScope<'_, '_> {
                 Body::Record(resolved_fields)
             }
             TypeDefKind::Variant(cases) => {
-                let mut resolved_cases = Vec::with_capacity(cases.len());
-                for case in cases {
-                    let payload = self.payload(key, name, case);
-                    resolved_cases.push(ResolvedCase {
-                        name: case.name,
-                        docs: case.docs,
-                        payload,
-                    });
-                }
+                let resolved_cases = self.cases(key, name, cases);
                 Body::Variant(resolved_cases)
+            }
+            TypeDefKind::RecordOfCases {
+                fields,
+                cases_field,
+                cases,
+            } => {
+                let cases_name = self.define_cases(key, name, cases_field, cases);
+                let mut resolved_fields = resolve_fields(fields, self.names);
+                resolved_fields.push(ResolvedField {
+                    name: cases_field,
+                    docs: None,
+                    ty: Escaped(&cases_name).to_string(),
+                });
+                Body::Record(resolved_fields)
             }
             TypeDefKind::Enum(cases) => {
                 let resolved_cases = cases
@@ -953,6 +982,55 @@ impl InterfaceScope<'_, '_> {
             docs: definition.docs(),
             body,
         });
+    }
+
+    fn cases(&mut self, key: TypeKey, variant_name: &str, cases: &[Case]) -> Vec<ResolvedCase> {
+        let mut resolved_cases = Vec::with_capacity(cases.len());
+        for case in cases {
+            let payload = self.payload(key, variant_name, case);
+            resolved_cases.push(ResolvedCase {
+                name: case.name,
+                docs: case.docs,
+                payload,
+            });
+        }
+        resolved_cases
+    }
+
+    /// Define the cases of a record-of-cases and return their definition's name.
+    ///
+    /// The name is derived from the resolved record name, so instantiations of
+    /// a generic enum keep distinct case definitions. Cases without data are
+    /// defined as an `enum`, like any other Rust enum of unit variants.
+    fn define_cases(
+        &mut self,
+        key: TypeKey,
+        record_name: &str,
+        cases_field: &str,
+        cases: &[Case],
+    ) -> String {
+        let cases_name = format!("{record_name}-{cases_field}");
+        check_name(
+            &cases_name,
+            || format!("the cases of `{}`", key.rust_name()),
+            self.errors,
+        );
+        self.namespace
+            .claim(&cases_name, format!("the cases of `{}`", key.rust_name()));
+
+        let resolved_cases = self.cases(key, &cases_name, cases);
+        let carries_data = resolved_cases.iter().any(|case| case.payload.is_some());
+        let body = if carries_data {
+            Body::Variant(resolved_cases)
+        } else {
+            Body::Enum(resolved_cases)
+        };
+        self.definitions.push(Definition {
+            name: cases_name.clone(),
+            docs: None,
+            body,
+        });
+        cases_name
     }
 
     /// The payload of `case` as WIT source text.

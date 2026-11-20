@@ -2,7 +2,7 @@
 
 use quote::ToTokens;
 use syn::meta::ParseNestedMeta;
-use syn::{Attribute, Expr, ExprLit, Lit, LitStr, Meta, Path};
+use syn::{Attribute, Expr, ExprLit, ExprPath, Lit, LitStr, Meta, Path, Type};
 
 /// Collects every problem in an item so one compilation reports them all.
 #[derive(Default)]
@@ -38,6 +38,40 @@ pub(crate) struct ContainerAttributes {
     pub(crate) name: Option<LitStr>,
     pub(crate) transparent: Option<Path>,
     pub(crate) crate_path: Option<Path>,
+    /// `field(name = "…", with = function)`, in declaration order.
+    pub(crate) computed_fields: Vec<ComputedField>,
+    /// The record field that holds an enum's cases when it has computed fields.
+    pub(crate) cases: Option<LitStr>,
+    /// The foreign type this declaration describes.
+    pub(crate) remote: Option<Path>,
+}
+
+/// A field of the wire record computed from the whole value.
+pub(crate) struct ComputedField {
+    pub(crate) name: LitStr,
+    pub(crate) function: ExprPath,
+}
+
+impl ComputedField {
+    fn parse(meta: &ParseNestedMeta<'_>) -> syn::Result<Self> {
+        let mut name = None;
+        let mut function = None;
+        meta.parse_nested_meta(|entry| {
+            if entry.path.is_ident("name") {
+                set_string(&mut name, &entry)
+            } else if entry.path.is_ident("with") {
+                let parsed_function = entry.value()?.parse()?;
+                function = Some(parsed_function);
+                Ok(())
+            } else {
+                Err(entry.error("expected `name` or `with`"))
+            }
+        })?;
+        match (name, function) {
+            (Some(name), Some(function)) => Ok(Self { name, function }),
+            _ => Err(meta.error("a computed field needs `name = \"…\"` and `with = function`")),
+        }
+    }
 }
 
 impl ContainerAttributes {
@@ -53,8 +87,22 @@ impl ContainerAttributes {
                 let crate_path = meta.value()?.parse()?;
                 parsed.crate_path = Some(crate_path);
                 Ok(())
+            } else if meta.path.is_ident("field") {
+                let computed_field = ComputedField::parse(&meta)?;
+                parsed.computed_fields.push(computed_field);
+                Ok(())
+            } else if meta.path.is_ident("cases") {
+                set_string(&mut parsed.cases, &meta)
+            } else if meta.path.is_ident("remote") {
+                if parsed.remote.is_some() {
+                    return Err(meta.error("`remote` is given more than once"));
+                }
+                let remote = meta.value()?.parse()?;
+                parsed.remote = Some(remote);
+                Ok(())
             } else {
-                Err(meta.error("expected `name`, `transparent` or `crate`"))
+                Err(meta
+                    .error("expected `name`, `transparent`, `field`, `cases`, `remote` or `crate`"))
             }
         });
         parsed
@@ -65,6 +113,27 @@ impl ContainerAttributes {
 #[derive(Default)]
 pub(crate) struct FieldAttributes {
     pub(crate) name: Option<LitStr>,
+    pub(crate) rule: Option<DeclaredRule>,
+}
+
+/// A representation rule and the attribute tokens that declared it.
+pub(crate) struct DeclaredRule {
+    pub(crate) rule: FieldRule,
+    pub(crate) declared_by: Path,
+}
+
+/// How a field's wire type is obtained instead of reflecting its own type.
+pub(crate) enum FieldRule {
+    /// `display`: its `Display` text.
+    Display,
+    /// `widen`: `usize` or `isize` at a fixed, lossless width.
+    Widen,
+    /// `into = W`: `W::from(field)`.
+    Into(Box<Type>),
+    /// `with = function`: `function(&parent)`.
+    With(ExprPath),
+    /// `skip`: not exported.
+    Skip,
 }
 
 impl FieldAttributes {
@@ -72,10 +141,33 @@ impl FieldAttributes {
         let mut parsed = Self::default();
         parse_wit_attributes(attributes, errors, |meta| {
             if meta.path.is_ident("name") {
-                set_string(&mut parsed.name, &meta)
-            } else {
-                Err(meta.error("expected `name`"))
+                return set_string(&mut parsed.name, &meta);
             }
+            let rule = if meta.path.is_ident("display") {
+                FieldRule::Display
+            } else if meta.path.is_ident("widen") {
+                FieldRule::Widen
+            } else if meta.path.is_ident("skip") {
+                FieldRule::Skip
+            } else if meta.path.is_ident("into") {
+                let wire_type = meta.value()?.parse()?;
+                FieldRule::Into(wire_type)
+            } else if meta.path.is_ident("with") {
+                let function = meta.value()?.parse()?;
+                FieldRule::With(function)
+            } else {
+                return Err(
+                    meta.error("expected `name`, `display`, `widen`, `into`, `with` or `skip`")
+                );
+            };
+            if parsed.rule.is_some() {
+                return Err(meta.error("a field takes one representation rule"));
+            }
+            parsed.rule = Some(DeclaredRule {
+                rule,
+                declared_by: meta.path.clone(),
+            });
+            Ok(())
         });
         parsed
     }

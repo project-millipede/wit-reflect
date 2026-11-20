@@ -2,10 +2,11 @@
 
 Generate WIT directly from the Rust types an implementation already uses.
 
-**Status: Phases 1 and 2 of 5 are implemented.** The library renders a validated
-WIT contract: types, functions, resources and worlds. Representation rules and
-the generated adapters that connect the contract to the Rust implementation are
-later phases; see [the phase plan](docs/phases.md).
+**Status: Phases 1 to 3 of 5 are implemented.** The library renders a validated
+WIT contract: types, functions, resources and worlds, including the wire shapes
+that representation rules declare. The generated adapters that connect the
+contract to the Rust implementation are later phases; see
+[the phase plan](docs/phases.md).
 
 ## Why
 
@@ -96,6 +97,41 @@ world files {
 }
 ```
 
+Where a field cannot cross the boundary as stored, a rule names its wire type:
+
+```rust
+#[derive(WitType)]
+#[wit(remote = object::Endianness)]      // checked against the foreign enum
+enum Endianness { Little, Big }
+
+#[derive(WitType)]
+pub struct Image {
+    #[wit(into = Endianness)]            // a dependency's enum
+    pub endianness: object::Endianness,
+    #[wit(into = MachoValue)]            // a wrapped number as { value, name }
+    pub file_type: macho::FileType,
+    #[wit(with = Image::subtype)]        // depends on a sibling field
+    pub cpu_subtype: macho::CpuSubtype,
+    #[wit(display)]                      // formatted text
+    pub minimum_os: Version,
+    #[wit(widen)]                        // usize as u64
+    pub read_count: usize,
+    #[wit(skip)]                         // not part of the contract
+    pub cause: Option<Box<dyn Error>>,
+}
+
+#[derive(WitType)]
+#[wit(field(name = "message", with = ToString::to_string), cases = "kind")]
+pub enum InspectionFailure { Selection(Failure), Inspection(InspectionError) }
+```
+
+```wit
+record inspection-failure {
+  message: string,
+  kind: inspection-failure-kind,
+}
+```
+
 ## How it works
 
 | Step | Owner | What happens |
@@ -120,10 +156,13 @@ Rules worth knowing:
   is `own<r>`; behind a reference it is `borrow<r>`.
 - **Dependency types are imported.** A type placed with
   `Schema::external_interface` is brought in with `use` and never redefined.
-- **Unsupported shapes fail early.** `usize`, borrowed data, unions, field-less
-  records, `async fn`, generic functions and `&mut` parameters are compile
-  errors at the declaration. Nothing is downgraded to a string or skipped with
-  a warning.
+- **Rules are checked where they are written.** `into` needs a `From` impl,
+  `display` needs `Display`, a `remote` declaration is matched exhaustively
+  against the foreign type. A rule that no longer holds stops compiling.
+- **Unsupported shapes fail early.** `usize` without a rule, borrowed data,
+  unions, field-less records, `async fn`, generic functions and `&mut`
+  parameters are compile errors at the declaration. Nothing is downgraded to a
+  string or skipped with a warning.
 
 To keep an owner crate's ordinary build free of this library, gate the macros:
 
@@ -162,9 +201,10 @@ cargo test --workspace
 
 ## Not yet supported
 
-- Representation rules: formatted values, projections, `usize` widening.
 - Generated lowering and `Guest` forwarding. Until then the generated WIT has no
-  generated implementation behind it.
+  generated implementation behind it, and a rule only determines the WIT.
+- `with` on fields inside enum cases, and `remote` declarations for foreign
+  types with private fields or `#[non_exhaustive]` enums.
 - `async fn`, methods that consume `self`, and operations that do not map to
   exactly one Rust function.
 - Comparing a type placed in an external interface with that interface's WIT.

@@ -31,3 +31,7 @@ required-features = ["derive"]
 [[test]]
 name = "operations"
 required-features = ["derive"]
+
+[[test]]
+name = "representation_rules"
+required-features = ["derive"]

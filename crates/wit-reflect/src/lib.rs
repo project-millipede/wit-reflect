@@ -121,6 +121,59 @@
 //! [`Schema::external_interface`] places types that a dependency package
 //! already defines, so they are imported instead of redefined.
 //!
+//! # Representation rules
+//!
+//! Some fields cannot cross a boundary as stored: a dependency's type, a
+//! `usize`, an error cause. A rule on the field names its wire type and how
+//! the value is obtained, without restating any field of the owner type.
+//!
+#![cfg_attr(feature = "derive", doc = "```")]
+#![cfg_attr(not(feature = "derive"), doc = "```ignore")]
+//! use std::fmt;
+//! use wit_reflect::{Schema, WitType};
+//!
+//! #[derive(WitType)]
+//! #[wit(field(name = "message", with = ToString::to_string))]
+//! struct ReadFailure {
+//!     #[wit(widen)]
+//!     requested: usize,
+//!     #[wit(display)]
+//!     cause: std::io::Error,
+//!     #[wit(skip)]
+//!     attempts: u8,
+//! }
+//!
+//! impl fmt::Display for ReadFailure {
+//!     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+//!         write!(formatter, "cannot read {} bytes: {}", self.requested, self.cause)
+//!     }
+//! }
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut schema = Schema::new("example:files@0.1.0".parse()?);
+//! schema.interface("reading").define::<ReadFailure>();
+//!
+//! let package = schema.resolve()?;
+//! let expected_wit = "\
+//! package example:files@0.1.0;
+//!
+//! interface reading {
+//!   record read-failure {
+//!     message: string,
+//!     requested: u64,
+//!     cause: string,
+//!   }
+//! }
+//! ";
+//! assert_eq!(package.to_string(), expected_wit);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The rules are listed with the `WitType` derive. In this
+//! version a rule determines the generated WIT only; the conversion it
+//! describes is generated in a later phase.
+//!
 //! # Keeping ordinary builds independent
 //!
 //! Gate the derive behind a default-off feature of the owning crate, so its
@@ -135,9 +188,9 @@
 //! # Current scope
 //!
 //! This crate generates the WIT contract: types, functions, resources and
-//! worlds. Representation rules and the generated adapters that connect the
-//! contract to the Rust implementation are later phases; see `docs/phases.md`
-//! in the repository.
+//! worlds, including the wire shapes that representation rules declare. The
+//! generated adapters that connect the contract to the Rust implementation
+//! are later phases; see `docs/phases.md` in the repository.
 
 mod error;
 mod function;
@@ -147,6 +200,7 @@ mod package_name;
 mod reflect;
 mod render;
 mod resolve;
+pub mod rule;
 mod schema;
 mod types;
 
@@ -184,6 +238,47 @@ pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 ///
 /// Every type parameter receives a `WitType` bound. Lifetime parameters are
 /// rejected because boundary values are owned.
+///
+/// # Representation rules
+///
+/// A rule gives a field a wire type other than its own. A field takes at most
+/// one. Each rule's requirement is checked by the compiler at the field.
+///
+/// | Rule | Wire type | Requirement |
+/// | --- | --- | --- |
+/// | `#[wit(display)]` | `string` | the field is `Display` |
+/// | `#[wit(widen)]` | `u64` for `usize`, `s64` for `isize` | see [`rule::Widen`] |
+/// | `#[wit(into = W)]` | `W`'s representation | `W: From<FieldType>` |
+/// | `#[wit(with = function)]` | the function's return type | `function: fn(&Self) -> W` |
+/// | `#[wit(skip)]` | none; the field is not exported | a named field |
+///
+/// `with` receives the whole value, so the result may depend on other fields.
+/// It applies to struct fields. `display`, `widen` and `into` also apply to
+/// the payload of an enum case and to a transparent struct's field.
+///
+/// # Computed fields
+///
+/// `#[wit(field(name = "…", with = function))]` on the item adds a leading
+/// field computed from the whole value, for example
+/// `with = ToString::to_string` for a `Display` message.
+///
+/// A WIT variant cannot hold a field next to its cases. An enum with computed
+/// fields is therefore exported as a record, and `#[wit(cases = "…")]` names
+/// the record field that holds the cases. They are defined as
+/// `<record-name>-<cases-field>`.
+///
+/// # Types of other crates
+///
+/// No derive can be placed on a dependency's type. `#[wit(remote = path)]`
+/// marks a local declaration of that type's shape. The derive reflects the
+/// local declaration and generates `From<path>` for it with an exhaustive
+/// match or a complete destructuring, so the declaration stops compiling when
+/// the foreign type changes. Fields of the foreign type then use
+/// `#[wit(into = Local)]`.
+///
+/// A foreign type that hides its fields, or an enum marked
+/// `#[non_exhaustive]`, cannot be declared this way; convert it with `into`
+/// or `with` instead.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::WitType;
 
