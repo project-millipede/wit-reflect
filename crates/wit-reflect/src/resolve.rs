@@ -1,7 +1,7 @@
 //! Resolution: validate a declared schema and give every type one owner and name.
 //!
 //! This module owns the rules the reflected model cannot express on its own:
-//! which interface defines a type, which name it gets, and which definitions
+//! which interface defines a type, which name it gets, and which declarations
 //! are not valid WIT. Rendering consumes its result without further checks.
 
 use std::collections::hash_map::Entry;
@@ -9,10 +9,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::error::{SchemaError, SchemaErrors};
+use crate::function::{Function, MethodKind};
 use crate::graph::TypeGraph;
 use crate::identifier::{self, Escaped};
-use crate::package_name::PackageName;
-use crate::schema::{InterfaceDeclaration, Schema};
+use crate::package_name::{self, PackageName};
+use crate::schema::{
+    DeclaredMethod, DeclaredType, Direction, ExternalInterfaceDeclaration, InterfaceDeclaration,
+    Schema, WorldDeclaration,
+};
 use crate::types::{Case, Field, Payload, Type, TypeDef, TypeDefKind, TypeKey};
 
 /// A validated WIT package.
@@ -23,6 +27,7 @@ use crate::types::{Case, Field, Payload, Type, TypeDef, TypeDefKind, TypeKey};
 pub struct ResolvedPackage {
     pub(crate) name: PackageName,
     pub(crate) interfaces: Vec<Interface>,
+    pub(crate) worlds: Vec<World>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,12 +35,14 @@ pub(crate) struct Interface {
     pub(crate) name: String,
     pub(crate) uses: Vec<Use>,
     pub(crate) definitions: Vec<Definition>,
+    pub(crate) functions: Vec<ResolvedFunction>,
 }
 
-/// `use <interface>.{<names>};`
+/// `use <source>.{<names>};`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Use {
-    pub(crate) interface: String,
+    /// The owning interface as WIT source text.
+    pub(crate) source: String,
     pub(crate) names: Vec<String>,
 }
 
@@ -52,6 +59,7 @@ pub(crate) enum Body {
     Variant(Vec<ResolvedCase>),
     /// Cases never carry a payload.
     Enum(Vec<ResolvedCase>),
+    Resource(Vec<ResolvedFunction>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,26 +78,76 @@ pub(crate) struct ResolvedCase {
     pub(crate) payload: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedFunction {
+    pub(crate) name: &'static str,
+    pub(crate) docs: Option<&'static str>,
+    pub(crate) kind: FunctionKind,
+    pub(crate) params: Vec<ResolvedParam>,
+    /// The result type as WIT source text. `None` when nothing is returned.
+    pub(crate) result: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FunctionKind {
+    /// A function of an interface, or a method of a resource.
+    Function,
+    Static,
+    Constructor,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedParam {
+    pub(crate) name: &'static str,
+    /// The type as WIT source text.
+    pub(crate) ty: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct World {
+    pub(crate) name: String,
+    pub(crate) items: Vec<ResolvedWorldItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedWorldItem {
+    pub(crate) direction: Direction,
+    pub(crate) label: Option<String>,
+    /// The imported or exported interface as WIT source text.
+    pub(crate) target: String,
+}
+
 pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> {
     let graph = schema.graph();
     let declarations = schema.interfaces();
+    let externals = schema.external_interfaces();
 
-    // 1. Check everything that does not depend on placement, and place types.
-    //    These problems are independent, so they are reported together.
+    // 1. Check declarations and place types. These problems are independent
+    //    of each other, so they are reported together.
     let mut declaration_errors = Vec::new();
     report_cycles(graph, &mut declaration_errors);
-    check_interface_names(declarations, &mut declaration_errors);
-    check_definitions(graph, &mut declaration_errors);
-    let placement = Placement::assign(graph, declarations, &mut declaration_errors);
+    check_package_items(declarations, schema.worlds(), &mut declaration_errors);
+    check_external_paths(externals, &mut declaration_errors);
+    check_operations(graph, declarations, &mut declaration_errors);
+    let placement = Placement::assign(graph, declarations, externals, &mut declaration_errors);
+    check_definitions(graph, &placement, &mut declaration_errors);
+    let worlds = resolve_worlds(schema.worlds(), declarations, &mut declaration_errors);
     SchemaErrors::check(declaration_errors)?;
 
     // 2. Resolve names. A namespace is meaningful only once every type has
     //    exactly one owner, so this runs after placement succeeded.
     let names = Names { graph, placement };
     let mut naming_errors = Vec::new();
+    check_external_type_names(externals, &names, &mut naming_errors);
     let mut interfaces = Vec::with_capacity(declarations.len());
     for position in 0..declarations.len() {
-        let interface = resolve_interface(position, declarations, &names, &mut naming_errors);
+        let scope = InterfaceScope {
+            names: &names,
+            namespace: Namespace::default(),
+            definitions: Vec::new(),
+            errors: &mut naming_errors,
+        };
+        let interface = scope.resolve(position, declarations, externals);
         interfaces.push(interface);
     }
     SchemaErrors::check(naming_errors)?;
@@ -97,6 +155,7 @@ pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> 
     Ok(ResolvedPackage {
         name: schema.package().clone(),
         interfaces,
+        worlds,
     })
 }
 
@@ -108,9 +167,40 @@ fn report_cycles(graph: &TypeGraph, errors: &mut Vec<SchemaError>) {
     }
 }
 
-fn check_interface_names(declarations: &[InterfaceDeclaration], errors: &mut Vec<SchemaError>) {
+/// Interfaces and worlds share the package's namespace.
+fn check_package_items(
+    declarations: &[InterfaceDeclaration],
+    worlds: &[WorldDeclaration],
+    errors: &mut Vec<SchemaError>,
+) {
     for declaration in declarations {
         check_name(&declaration.name, || "an interface".to_owned(), errors);
+    }
+    for world in worlds {
+        check_name(&world.name, || "a world".to_owned(), errors);
+        let names_an_interface = declarations
+            .iter()
+            .any(|declaration| declaration.name == world.name);
+        if names_an_interface {
+            errors.push(SchemaError::DuplicatePackageItem {
+                name: world.name.clone(),
+            });
+        }
+    }
+}
+
+fn check_external_paths(externals: &[ExternalInterfaceDeclaration], errors: &mut Vec<SchemaError>) {
+    for external in externals {
+        check_interface_path(&external.path, errors);
+    }
+}
+
+fn check_interface_path(path: &str, errors: &mut Vec<SchemaError>) {
+    if let Err(reason) = package_name::validate_interface_path(path) {
+        errors.push(SchemaError::InvalidInterfacePath {
+            path: path.to_owned(),
+            reason,
+        });
     }
 }
 
@@ -124,9 +214,112 @@ fn check_name(name: &str, subject: impl FnOnce() -> String, errors: &mut Vec<Sch
     }
 }
 
-/// Check the shape of every reflected definition.
-fn check_definitions(graph: &TypeGraph, errors: &mut Vec<SchemaError>) {
+/// Check the functions of every interface and the functions of its resources.
+fn check_operations(
+    graph: &TypeGraph,
+    declarations: &[InterfaceDeclaration],
+    errors: &mut Vec<SchemaError>,
+) {
+    for declaration in declarations {
+        for function in &declaration.functions {
+            let function_label = format!(
+                "function `{}` of interface `{}`",
+                function.name, declaration.name
+            );
+            check_function(&function_label, function, errors);
+        }
+        for declared in &declaration.declared {
+            check_methods(graph, declared, errors);
+        }
+    }
+}
+
+fn check_methods(graph: &TypeGraph, declared: &DeclaredType, errors: &mut Vec<SchemaError>) {
+    if declared.methods.is_empty() {
+        return;
+    }
+    let is_resource = declared.ty.definition_key().is_some_and(|key| {
+        let definition = graph.definition(key);
+        matches!(definition.kind(), TypeDefKind::Resource)
+    });
+    if !is_resource {
+        errors.push(SchemaError::MethodsOnNonResource {
+            rust_type: declared.rust_name,
+        });
+        return;
+    }
+
+    let mut seen_names = HashSet::new();
+    let mut constructor_count = 0_usize;
+    for method in &declared.methods {
+        let function = &method.function;
+        let function_label = format!("function `{}` of `{}`", function.name, declared.rust_name);
+        check_function(&function_label, function, errors);
+
+        if method.kind == MethodKind::Constructor {
+            // A constructor is written without a name, so it claims none.
+            constructor_count += 1;
+            if function.result != declared.ty {
+                errors.push(SchemaError::ConstructorResult {
+                    resource: declared.rust_name,
+                });
+            }
+            continue;
+        }
+        let is_first_use = seen_names.insert(function.name);
+        if !is_first_use {
+            errors.push(SchemaError::DuplicateMember {
+                rust_type: declared.rust_name.to_owned(),
+                name: function.name,
+            });
+        }
+    }
+    if constructor_count > 1 {
+        errors.push(SchemaError::MultipleConstructors {
+            resource: declared.rust_name,
+        });
+    }
+}
+
+/// A function's own name, its parameter names and the values it exchanges.
+fn check_function(function_label: &str, function: &Function, errors: &mut Vec<SchemaError>) {
+    check_name(function.name, || function_label.to_owned(), errors);
+
+    let mut seen_parameters = HashSet::new();
+    let mut exchanges_misplaced_unit = false;
+    for param in &function.params {
+        check_name(
+            param.name,
+            || format!("a parameter of {function_label}"),
+            errors,
+        );
+        let is_first_use = seen_parameters.insert(param.name);
+        if !is_first_use {
+            errors.push(SchemaError::DuplicateParameter {
+                function: function_label.to_owned(),
+                name: param.name,
+            });
+        }
+        exchanges_misplaced_unit |= has_misplaced_unit(&param.ty);
+    }
+
+    // A unit result means "returns nothing"; unit nested in the result does not.
+    if !function.result.is_unit() {
+        exchanges_misplaced_unit |= has_misplaced_unit(&function.result);
+    }
+    if exchanges_misplaced_unit {
+        errors.push(SchemaError::UnitOutsideResult {
+            subject: function_label.to_owned(),
+        });
+    }
+}
+
+/// Check the shape of every definition this package would define.
+fn check_definitions(graph: &TypeGraph, placement: &Placement<'_>, errors: &mut Vec<SchemaError>) {
     for (key, definition) in graph.definitions() {
+        if !placement.reached_locally.contains(key) {
+            continue;
+        }
         let rust_type = key.rust_name();
         match definition.kind() {
             TypeDefKind::Record(fields) => check_fields(rust_type, fields, errors),
@@ -141,6 +334,9 @@ fn check_definitions(graph: &TypeGraph, errors: &mut Vec<SchemaError>) {
                 let case_names = cases.iter().map(|case| case.name);
                 check_members(rust_type, "case", case_names, errors);
             }
+            // A resource has no members; its functions are checked with the
+            // interface that declares them.
+            TypeDefKind::Resource => {}
         }
     }
 }
@@ -193,7 +389,7 @@ fn check_members(
 fn check_value_type(owner: &str, ty: &Type, errors: &mut Vec<SchemaError>) {
     if has_misplaced_unit(ty) {
         errors.push(SchemaError::UnitOutsideResult {
-            rust_type: owner.to_owned(),
+            subject: format!("`{owner}`"),
         });
     }
 }
@@ -220,53 +416,80 @@ fn has_misplaced_unit(ty: &Type) -> bool {
         | Type::F64
         | Type::Char
         | Type::String
-        | Type::Named(_) => false,
+        | Type::Named(_)
+        | Type::Own(_)
+        | Type::Borrow(_) => false,
     }
+}
+
+/// Where a named type is defined. Local interfaces sort before external ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Location {
+    /// Position of an interface of this package, in declaration order.
+    Local(usize),
+    /// Position of an external interface, in declaration order.
+    External(usize),
+}
+
+#[derive(Clone, Copy)]
+struct Owner<'schema> {
+    location: Location,
+    declared_name: Option<&'schema str>,
 }
 
 /// Which interface owns each named type, and what each interface imports.
 struct Placement<'schema> {
     owners: HashMap<TypeKey, Owner<'schema>>,
-    /// Per interface: referenced types that another interface owns.
-    imports: Vec<Vec<TypeKey>>,
-}
-
-#[derive(Clone, Copy)]
-struct Owner<'schema> {
-    /// Position of the owning interface in declaration order.
-    interface: usize,
-    declared_name: Option<&'schema str>,
+    /// Per local interface: referenced types that another interface owns.
+    imports: Vec<Vec<(TypeKey, Location)>>,
+    /// Types that some local interface defines or would define. Types reached
+    /// only through an external type are not part of this package.
+    reached_locally: HashSet<TypeKey>,
 }
 
 impl<'schema> Placement<'schema> {
     fn assign(
         graph: &TypeGraph,
         declarations: &'schema [InterfaceDeclaration],
+        externals: &'schema [ExternalInterfaceDeclaration],
         errors: &mut Vec<SchemaError>,
     ) -> Self {
+        let describe = |location: Location| match location {
+            Location::Local(position) => declarations[position].name.clone(),
+            Location::External(position) => externals[position].path.clone(),
+        };
+
         // 1. A declared type belongs to the interface that declares it.
+        let local_declarations = declarations
+            .iter()
+            .enumerate()
+            .map(|(position, declaration)| (Location::Local(position), &declaration.declared));
+        let external_declarations = externals
+            .iter()
+            .enumerate()
+            .map(|(position, external)| (Location::External(position), &external.declared));
         let mut owners: HashMap<TypeKey, Owner<'schema>> = HashMap::new();
-        for (interface, declaration) in declarations.iter().enumerate() {
-            for declared in &declaration.declared {
-                let Type::Named(key) = &declared.ty else {
+        for (location, declared_types) in local_declarations.chain(external_declarations) {
+            for declared in declared_types {
+                let Some(key) = declared.ty.definition_key() else {
                     errors.push(SchemaError::NotNamedType {
-                        interface: declaration.name.clone(),
+                        interface: describe(location),
                         rust_type: declared.rust_name,
                     });
                     continue;
                 };
-                match owners.entry(*key) {
+                match owners.entry(key) {
                     Entry::Occupied(first_declaration) => {
-                        let first_interface = first_declaration.get().interface;
+                        let first_location = first_declaration.get().location;
                         errors.push(SchemaError::DuplicateDeclaration {
                             rust_type: key.rust_name(),
-                            first: declarations[first_interface].name.clone(),
-                            second: declaration.name.clone(),
+                            first: describe(first_location),
+                            second: describe(location),
                         });
                     }
                     Entry::Vacant(unclaimed) => {
                         unclaimed.insert(Owner {
-                            interface,
+                            location,
                             declared_name: declared.name.as_deref(),
                         });
                     }
@@ -274,22 +497,17 @@ impl<'schema> Placement<'schema> {
             }
         }
 
-        // 2. Follow references from each interface's declared types. The walk
-        //    stops at a type another interface declares: that is an import,
-        //    and its own references belong to its owner.
+        // 2. Follow references from each local interface's declared types and
+        //    operations. The walk stops at a type another interface declares:
+        //    that is an import, and its own references belong to its owner.
         let mut imports = Vec::with_capacity(declarations.len());
+        let mut reached_locally = HashSet::new();
         let mut reached_by: HashMap<TypeKey, Vec<usize>> = HashMap::new();
-        for (interface, declaration) in declarations.iter().enumerate() {
+        for (position, declaration) in declarations.iter().enumerate() {
+            let here = Location::Local(position);
             let mut interface_imports = Vec::new();
             let mut visited = HashSet::new();
-            let mut pending: Vec<TypeKey> = declaration
-                .declared
-                .iter()
-                .filter_map(|declared| match &declared.ty {
-                    Type::Named(key) => Some(*key),
-                    _ => None,
-                })
-                .collect();
+            let mut pending = interface_roots(declaration);
 
             while let Some(key) = pending.pop() {
                 let is_first_visit = visited.insert(key);
@@ -297,13 +515,14 @@ impl<'schema> Placement<'schema> {
                     continue;
                 }
                 match owners.get(&key) {
-                    Some(owner) if owner.interface != interface => {
-                        interface_imports.push(key);
+                    Some(owner) if owner.location != here => {
+                        interface_imports.push((key, owner.location));
                         continue;
                     }
                     Some(_) => {}
-                    None => reached_by.entry(key).or_default().push(interface),
+                    None => reached_by.entry(key).or_default().push(position),
                 }
+                reached_locally.insert(key);
                 let definition = graph.definition(key);
                 collect_references(definition, &mut pending);
             }
@@ -317,40 +536,68 @@ impl<'schema> Placement<'schema> {
                 continue;
             }
             match reached_by.get(key).map(Vec::as_slice) {
-                Some([interface]) => {
+                Some([position]) => {
                     owners.insert(
                         *key,
                         Owner {
-                            interface: *interface,
+                            location: Location::Local(*position),
                             declared_name: None,
                         },
                     );
                 }
-                Some(interfaces) => {
-                    let interface_names = interfaces
+                Some(positions) => {
+                    let interface_names = positions
                         .iter()
-                        .map(|interface| format!("`{}`", declarations[*interface].name))
+                        .map(|position| format!("`{}`", declarations[*position].name))
                         .collect();
                     errors.push(SchemaError::AmbiguousPlacement {
                         rust_type: key.rust_name(),
                         interfaces: interface_names,
                     });
                 }
-                // Reached only through a declaration already reported as
-                // `NotNamedType`, such as `Vec<Self>`.
+                // Reached only through an external type, or through a
+                // declaration already reported as `NotNamedType`. Such a type
+                // is not part of this package.
                 None => {}
             }
         }
 
-        Self { owners, imports }
+        Self {
+            owners,
+            imports,
+            reached_locally,
+        }
     }
 
-    fn owner(&self, key: TypeKey) -> Owner<'schema> {
-        *self
-            .owners
-            .get(&key)
-            .expect("placement succeeded, so every reflected type has an owning interface")
+    fn location(&self, key: TypeKey) -> Option<Location> {
+        let owner = self.owners.get(&key)?;
+        Some(owner.location)
     }
+}
+
+/// The named types an interface refers to directly: its declared types and
+/// everything in the signatures of its functions and resource functions.
+fn interface_roots(declaration: &InterfaceDeclaration) -> Vec<TypeKey> {
+    let mut roots = Vec::new();
+    for declared in &declaration.declared {
+        if let Some(key) = declared.ty.definition_key() {
+            roots.push(key);
+        }
+        for method in &declared.methods {
+            collect_function_references(&method.function, &mut roots);
+        }
+    }
+    for function in &declaration.functions {
+        collect_function_references(function, &mut roots);
+    }
+    roots
+}
+
+fn collect_function_references(function: &Function, pending: &mut Vec<TypeKey>) {
+    for param in &function.params {
+        collect_type_references(&param.ty, pending);
+    }
+    collect_type_references(&function.result, pending);
 }
 
 /// Queue every named type that `definition` refers to directly.
@@ -366,7 +613,7 @@ fn collect_references(definition: &TypeDef, pending: &mut Vec<TypeKey>) {
                 }
             }
         }
-        TypeDefKind::Enum(_) => {}
+        TypeDefKind::Enum(_) | TypeDefKind::Resource => {}
     }
 }
 
@@ -378,7 +625,7 @@ fn collect_field_references(fields: &[Field], pending: &mut Vec<TypeKey>) {
 
 fn collect_type_references(ty: &Type, pending: &mut Vec<TypeKey>) {
     match ty {
-        Type::Named(key) => pending.push(*key),
+        Type::Named(key) | Type::Own(key) | Type::Borrow(key) => pending.push(*key),
         Type::List(inner) | Type::Option(inner) => collect_type_references(inner, pending),
         Type::Result { ok, err } => {
             collect_type_references(ok, pending);
@@ -405,6 +652,64 @@ fn collect_type_references(ty: &Type, pending: &mut Vec<TypeKey>) {
     }
 }
 
+/// Worlds refer to interfaces by name or path; resolve and check each item.
+fn resolve_worlds(
+    worlds: &[WorldDeclaration],
+    declarations: &[InterfaceDeclaration],
+    errors: &mut Vec<SchemaError>,
+) -> Vec<World> {
+    let mut resolved_worlds = Vec::with_capacity(worlds.len());
+    for world in worlds {
+        let mut seen_items = HashSet::new();
+        let mut items = Vec::with_capacity(world.items.len());
+        for item in &world.items {
+            // An external interface is named by a path, which contains `:`.
+            let target = if item.target.contains(':') {
+                check_interface_path(&item.target, errors);
+                item.target.clone()
+            } else {
+                let is_declared = declarations
+                    .iter()
+                    .any(|declaration| declaration.name == item.target);
+                if !is_declared {
+                    errors.push(SchemaError::UnknownInterface {
+                        world: world.name.clone(),
+                        interface: item.target.clone(),
+                    });
+                }
+                Escaped(&item.target).to_string()
+            };
+            if let Some(label) = &item.label {
+                check_name(
+                    label,
+                    || format!("an item of world `{}`", world.name),
+                    errors,
+                );
+            }
+
+            // Imports and exports are separate namespaces of a world.
+            let item_name = item.label.as_ref().unwrap_or(&item.target);
+            let is_first_use = seen_items.insert((item.direction, item_name));
+            if !is_first_use {
+                errors.push(SchemaError::DuplicateWorldItem {
+                    world: world.name.clone(),
+                    item: item_name.clone(),
+                });
+            }
+            items.push(ResolvedWorldItem {
+                direction: item.direction,
+                label: item.label.clone(),
+                target,
+            });
+        }
+        resolved_worlds.push(World {
+            name: world.name.clone(),
+            items,
+        });
+    }
+    resolved_worlds
+}
+
 /// Resolved type names, available once placement has succeeded.
 struct Names<'schema> {
     graph: &'schema TypeGraph,
@@ -414,8 +719,12 @@ struct Names<'schema> {
 impl<'schema> Names<'schema> {
     /// The declared name, or the default from the type's own definition.
     fn name_of(&self, key: TypeKey) -> &'schema str {
-        let owner = self.placement.owner(key);
-        match owner.declared_name {
+        let declared_name = self
+            .placement
+            .owners
+            .get(&key)
+            .and_then(|owner| owner.declared_name);
+        match declared_name {
             Some(declared_name) => declared_name,
             None => self.graph.definition(key).name(),
         }
@@ -425,6 +734,29 @@ impl<'schema> Names<'schema> {
     fn expression(&self, ty: &Type) -> String {
         let expression = Expression { ty, names: self };
         expression.to_string()
+    }
+
+    fn function(&self, function: &Function, kind: FunctionKind) -> ResolvedFunction {
+        let params = function
+            .params
+            .iter()
+            .map(|param| ResolvedParam {
+                name: param.name,
+                ty: self.expression(&param.ty),
+            })
+            .collect();
+        let result = if function.result.is_unit() {
+            None
+        } else {
+            Some(self.expression(&function.result))
+        };
+        ResolvedFunction {
+            name: function.name,
+            docs: function.docs,
+            kind,
+            params,
+            result,
+        }
     }
 }
 
@@ -440,6 +772,11 @@ impl<'names> Expression<'names, '_> {
             ty,
             names: self.names,
         }
+    }
+
+    fn name(&self, key: TypeKey) -> Escaped<'names> {
+        let name = self.names.name_of(key);
+        Escaped(name)
     }
 }
 
@@ -482,49 +819,33 @@ impl fmt::Display for Expression<'_, '_> {
                 }
                 formatter.write_str(">")
             }
-            Type::Named(key) => {
-                let name = self.names.name_of(*key);
-                write!(formatter, "{}", Escaped(name))
-            }
+            Type::Named(key) => write!(formatter, "{}", self.name(*key)),
+            Type::Own(key) => write!(formatter, "own<{}>", self.name(*key)),
+            Type::Borrow(key) => write!(formatter, "borrow<{}>", self.name(*key)),
         }
     }
 }
 
-/// Build one interface: its definitions in graph order, then its imports.
-fn resolve_interface(
-    position: usize,
-    declarations: &[InterfaceDeclaration],
+/// The names declared for types of external interfaces are WIT identifiers too.
+fn check_external_type_names(
+    externals: &[ExternalInterfaceDeclaration],
     names: &Names<'_>,
     errors: &mut Vec<SchemaError>,
-) -> Interface {
-    let mut scope = InterfaceScope {
-        names,
-        namespace: Namespace::default(),
-        definitions: Vec::new(),
-        errors,
-    };
-
-    for (key, definition) in names.graph.definitions() {
-        let owner = names.placement.owner(*key);
-        if owner.interface == position {
-            scope.define(*key, definition);
+) {
+    for external in externals {
+        for declared in &external.declared {
+            let Some(key) = declared.ty.definition_key() else {
+                continue;
+            };
+            let name = names.name_of(key);
+            check_name(name, || format!("the type `{}`", key.rust_name()), errors);
         }
-    }
-    let uses = scope.import(position, declarations);
-
-    let interface_name = &declarations[position].name;
-    scope.namespace.report_clashes(interface_name, scope.errors);
-    Interface {
-        name: interface_name.clone(),
-        uses,
-        definitions: scope.definitions,
     }
 }
 
-/// One interface while its definitions and imports are collected.
+/// One interface while its definitions, imports and functions are collected.
 ///
-/// Definitions, payload records and imports all claim names in the same
-/// namespace, so they are gathered by one owner.
+/// They all claim names in the same namespace, so one owner gathers them.
 struct InterfaceScope<'run, 'schema> {
     names: &'run Names<'schema>,
     namespace: Namespace,
@@ -533,8 +854,49 @@ struct InterfaceScope<'run, 'schema> {
 }
 
 impl InterfaceScope<'_, '_> {
+    /// Build the interface: definitions in graph order, imports, functions.
+    fn resolve(
+        mut self,
+        position: usize,
+        declarations: &[InterfaceDeclaration],
+        externals: &[ExternalInterfaceDeclaration],
+    ) -> Interface {
+        let declaration = &declarations[position];
+        let here = Location::Local(position);
+
+        for (key, definition) in self.names.graph.definitions() {
+            if self.names.placement.location(*key) != Some(here) {
+                continue;
+            }
+            let declared_methods = declaration
+                .declared
+                .iter()
+                .find(|declared| declared.ty.definition_key() == Some(*key))
+                .map_or(&[][..], |declared| declared.methods.as_slice());
+            self.define(*key, definition, declared_methods);
+        }
+        let uses = self.import(position, declarations, externals);
+
+        let mut functions = Vec::with_capacity(declaration.functions.len());
+        for function in &declaration.functions {
+            self.namespace
+                .claim(function.name, format!("the function `{}`", function.name));
+            let resolved_function = self.names.function(function, FunctionKind::Function);
+            functions.push(resolved_function);
+        }
+
+        self.namespace
+            .report_clashes(&declaration.name, self.errors);
+        Interface {
+            name: declaration.name.clone(),
+            uses,
+            definitions: self.definitions,
+            functions,
+        }
+    }
+
     /// Add the definition of `key`, preceded by the payload records it needs.
-    fn define(&mut self, key: TypeKey, definition: &TypeDef) {
+    fn define(&mut self, key: TypeKey, definition: &TypeDef, methods: &[DeclaredMethod]) {
         let name = self.names.name_of(key);
         check_name(
             name,
@@ -570,6 +932,20 @@ impl InterfaceScope<'_, '_> {
                     })
                     .collect();
                 Body::Enum(resolved_cases)
+            }
+            TypeDefKind::Resource => {
+                let resolved_functions = methods
+                    .iter()
+                    .map(|method| {
+                        let kind = match method.kind {
+                            MethodKind::Method => FunctionKind::Function,
+                            MethodKind::Static => FunctionKind::Static,
+                            MethodKind::Constructor => FunctionKind::Constructor,
+                        };
+                        self.names.function(&method.function, kind)
+                    })
+                    .collect();
+                Body::Resource(resolved_functions)
             }
         };
         self.definitions.push(Definition {
@@ -618,29 +994,38 @@ impl InterfaceScope<'_, '_> {
 
     /// Claim the names this interface imports and group them by owner.
     ///
-    /// Owners follow declaration order and names are sorted, so the `use`
-    /// lines do not depend on the order in which references were found.
-    fn import(&mut self, position: usize, declarations: &[InterfaceDeclaration]) -> Vec<Use> {
-        let mut imported_names: BTreeMap<usize, BTreeSet<&str>> = BTreeMap::new();
-        for key in &self.names.placement.imports[position] {
-            let owner = self.names.placement.owner(*key);
-            let owner_name = &declarations[owner.interface].name;
+    /// Local owners come first in declaration order, then external ones, and
+    /// names are sorted. The `use` lines therefore do not depend on the order
+    /// in which references were found.
+    fn import(
+        &mut self,
+        position: usize,
+        declarations: &[InterfaceDeclaration],
+        externals: &[ExternalInterfaceDeclaration],
+    ) -> Vec<Use> {
+        let source_of = |location: Location| match location {
+            Location::Local(owner_position) => {
+                Escaped(&declarations[owner_position].name).to_string()
+            }
+            Location::External(owner_position) => externals[owner_position].path.clone(),
+        };
+
+        let mut imported_names: BTreeMap<Location, BTreeSet<&str>> = BTreeMap::new();
+        for (key, location) in &self.names.placement.imports[position] {
             let name = self.names.name_of(*key);
             let origin = format!(
-                "`{}` imported from interface `{owner_name}`",
-                key.rust_name()
+                "`{}` imported from interface `{}`",
+                key.rust_name(),
+                source_of(*location)
             );
             self.namespace.claim(name, origin);
-            imported_names
-                .entry(owner.interface)
-                .or_default()
-                .insert(name);
+            imported_names.entry(*location).or_default().insert(name);
         }
 
         imported_names
             .into_iter()
-            .map(|(owner_position, sorted_names)| Use {
-                interface: declarations[owner_position].name.clone(),
+            .map(|(location, sorted_names)| Use {
+                source: source_of(location),
                 names: sorted_names.into_iter().map(str::to_owned).collect(),
             })
             .collect()
@@ -658,7 +1043,7 @@ fn resolve_fields(fields: &[Field], names: &Names<'_>) -> Vec<ResolvedField> {
         .collect()
 }
 
-/// The type names of one interface and what claims each of them.
+/// The names of one interface and what claims each of them.
 ///
 /// An ordered map keeps clash reports reproducible.
 #[derive(Default)]
@@ -674,7 +1059,7 @@ impl Namespace {
     fn report_clashes(self, interface: &str, errors: &mut Vec<SchemaError>) {
         for (name, origins) in self.claims {
             if origins.len() > 1 {
-                errors.push(SchemaError::DuplicateTypeName {
+                errors.push(SchemaError::DuplicateName {
                     interface: interface.to_owned(),
                     name,
                     origins,

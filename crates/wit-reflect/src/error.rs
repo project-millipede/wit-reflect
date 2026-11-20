@@ -26,21 +26,22 @@ pub enum SchemaError {
         reason: IdentifierError,
     },
 
-    /// Several definitions in one interface resolve to the same name.
+    /// Several items of one interface resolve to the same name.
     ///
-    /// Distinct instantiations of a generic type share a default name. Give
+    /// Types, imported types and functions share an interface's namespace.
+    /// Distinct instantiations of a generic type share a default name; give
     /// each one its own with
     /// [`InterfaceBuilder::define_as`](crate::InterfaceBuilder::define_as).
     #[error(
         "interface `{interface}` would define `{name}` more than once, for {}",
         .origins.join(" and ")
     )]
-    DuplicateTypeName {
+    DuplicateName {
         /// The interface whose namespace contains the clash.
         interface: String,
         /// The shared WIT name.
         name: String,
-        /// The Rust types, payloads or imports that resolve to it.
+        /// The Rust types, payloads, imports or functions that resolve to it.
         origins: Vec<String>,
     },
 
@@ -102,10 +103,74 @@ pub enum SchemaError {
     },
 
     /// The unit type appears where WIT needs a value.
-    #[error("`{rust_type}` uses `()` outside of a `Result`; WIT has no unit value")]
+    #[error("{subject} uses `()` outside of a `Result`; WIT has no unit value")]
     UnitOutsideResult {
-        /// The Rust type, with the case name for a struct-like case.
-        rust_type: String,
+        /// The Rust type or function whose member has the unit type.
+        subject: String,
+    },
+
+    /// Two parameters of one function share a WIT name.
+    #[error("{function} has more than one parameter named `{name}`")]
+    DuplicateParameter {
+        /// The function, described with its interface or resource.
+        function: String,
+        /// The shared WIT name.
+        name: &'static str,
+    },
+
+    /// A resource exports more than one constructor.
+    #[error("`{resource}` exports more than one constructor")]
+    MultipleConstructors {
+        /// The resource's Rust type.
+        resource: &'static str,
+    },
+
+    /// A constructor returns something other than its resource.
+    #[error("the constructor of `{resource}` must return `{resource}`")]
+    ConstructorResult {
+        /// The resource's Rust type.
+        resource: &'static str,
+    },
+
+    /// Functions are attached to a type that is not a resource.
+    #[error("`{rust_type}` exports functions but is not a resource")]
+    MethodsOnNonResource {
+        /// The Rust type the functions were attached to.
+        rust_type: &'static str,
+    },
+
+    /// A world item or external interface is not `namespace:package/interface`.
+    #[error("`{path}` is not a valid interface path because {reason}")]
+    InvalidInterfacePath {
+        /// The rejected path.
+        path: String,
+        /// What is wrong with it.
+        reason: String,
+    },
+
+    /// A world imports or exports an interface the schema does not declare.
+    #[error("world `{world}` refers to the undeclared interface `{interface}`")]
+    UnknownInterface {
+        /// The world containing the item.
+        world: String,
+        /// The missing interface's name.
+        interface: String,
+    },
+
+    /// A world imports or exports the same name twice.
+    #[error("world `{world}` lists `{item}` more than once")]
+    DuplicateWorldItem {
+        /// The world containing the items.
+        world: String,
+        /// The repeated import or export name.
+        item: String,
+    },
+
+    /// An interface and a world of the package share a name.
+    #[error("`{name}` names both an interface and a world")]
+    DuplicatePackageItem {
+        /// The shared name.
+        name: String,
     },
 }
 

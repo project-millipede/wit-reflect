@@ -218,7 +218,7 @@ fn unnamed_instantiations_of_one_generic_type_are_rejected() -> Result<(), Box<d
 
     let errors = resolution.expect_err("colliding instantiations must not resolve");
     let outcome_clash = errors.iter().find_map(|error| match error {
-        SchemaError::DuplicateTypeName { name, origins, .. } if name == "outcome" => Some(origins),
+        SchemaError::DuplicateName { name, origins, .. } if name == "outcome" => Some(origins),
         _ => None,
     });
     let origins = outcome_clash.expect("the clash on `outcome` should be reported");

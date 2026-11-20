@@ -16,7 +16,7 @@ heck = "0.5"
 proc-macro2 = "1"
 quote = "1"
 semver = "1"
-syn = "3"
+syn = { version = "3", features = ["full"] }
 thiserror = "2"
 wit-parser = "0.261"
 wit-reflect-macros = { path = "crates/wit-reflect-macros" }

@@ -2,9 +2,10 @@
 
 Generate WIT directly from the Rust types an implementation already uses.
 
-**Status: Phase 1 of 5 (type reflection) is implemented.** The library renders
-validated WIT type definitions. Functions, resources, worlds, representation rules
-and generated adapters are later phases; see [the phase plan](docs/phases.md).
+**Status: Phases 1 and 2 of 5 are implemented.** The library renders a validated
+WIT contract: types, functions, resources and worlds. Representation rules and
+the generated adapters that connect the contract to the Rust implementation are
+later phases; see [the phase plan](docs/phases.md).
 
 ## Why
 
@@ -58,12 +59,49 @@ interface inspection {
 }
 ```
 
+Operations are marked where they are declared and selected where the contract
+is declared:
+
+```rust
+use wit_reflect::{WitResource, export, operation};
+
+#[derive(WitResource)]
+struct Session { /* fields are not exported */ }
+
+impl Session {
+    #[export]
+    fn select(&mut self, resource: &str) { /* … */ }
+}
+
+#[export]
+fn create_session() -> Session { /* … */ }
+
+let mut native = schema.interface("native");
+native.resource::<Session>().method(operation!(Session::select));
+native.function(operation!(create_session));
+schema.world("files").export("native");
+```
+
+```wit
+interface native {
+  resource session {
+    select: func(%resource: string);
+  }
+
+  create-session: func() -> own<session>;
+}
+
+world files {
+  export native;
+}
+```
+
 ## How it works
 
 | Step | Owner | What happens |
 | --- | --- | --- |
-| Reflect | `#[derive(WitType)]` in the crate that owns the type | Fields are described as declared. The Rust compiler has already resolved aliases, re-exports, dependency crates and generic arguments. |
-| Declare | `Schema` in a generator program | Interfaces, the types each one defines, and names for generic instantiations. |
+| Reflect | `#[derive(WitType)]`, `#[derive(WitResource)]` and `#[export]` in the crate that owns the item | Fields and signatures are described as declared. The Rust compiler has already resolved aliases, re-exports, dependency crates and generic arguments. |
+| Declare | `Schema` in a generator program | Interfaces, the types and operations each one exports, names for generic instantiations, external interfaces and worlds. |
 | Resolve | `Schema::resolve` | Every type gets one owning interface and one name; all problems are reported together. |
 | Render | `ResolvedPackage: Display` | Deterministic WIT text with keyword escaping and `use` statements. |
 
@@ -75,22 +113,35 @@ Rules worth knowing:
 - **Each type has one owning interface.** A declared type belongs where it is
   declared. An undeclared dependency belongs to the only interface that reaches
   it. A type reached from two interfaces must be declared in one of them.
-- **Unsupported shapes fail early.** `usize`, borrowed data, unions and
-  field-less records are compile errors at the owner type. Nothing is
-  downgraded to a string or skipped with a warning.
+- **Operations are selected, never collected.** `#[export]` only reflects a
+  signature. A method is part of the contract when the schema lists it, so
+  methods from several `impl` blocks combine and unlisted ones stay private.
+- **Handles follow the Rust signature.** A resource passed or returned by value
+  is `own<r>`; behind a reference it is `borrow<r>`.
+- **Dependency types are imported.** A type placed with
+  `Schema::external_interface` is brought in with `use` and never redefined.
+- **Unsupported shapes fail early.** `usize`, borrowed data, unions, field-less
+  records, `async fn`, generic functions and `&mut` parameters are compile
+  errors at the declaration. Nothing is downgraded to a string or skipped with
+  a warning.
 
-To keep an owner crate's ordinary build free of this library, gate the derive:
+To keep an owner crate's ordinary build free of this library, gate the macros:
 
 ```rust
 #[cfg_attr(feature = "wit", derive(wit_reflect::WitType))]
 pub struct BinaryReport { /* fields */ }
+
+impl Session {
+    #[cfg_attr(feature = "wit", wit_reflect::export)]
+    pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
+}
 ```
 
 ## Layout
 
 ```text
-crates/wit-reflect/          reflection trait, schema, resolution, rendering
-crates/wit-reflect-macros/   #[derive(WitType)]
+crates/wit-reflect/          reflection traits, schema, resolution, rendering
+crates/wit-reflect-macros/   derives, #[export] and operation!
 docs/phases.md               definitions, phases and their acceptance evidence
 docs/rust-practices.md       Rust practices applied in this workspace
 ```
@@ -111,7 +162,12 @@ cargo test --workspace
 
 ## Not yet supported
 
-Functions, resources and factories, worlds, references to external WIT packages,
-representation rules (formatted values, projections, `usize` widening), generated
-lowering and `Guest` forwarding. No Wasm target, wit-bindgen or jco run has been
-performed with generated output yet.
+- Representation rules: formatted values, projections, `usize` widening.
+- Generated lowering and `Guest` forwarding. Until then the generated WIT has no
+  generated implementation behind it.
+- `async fn`, methods that consume `self`, and operations that do not map to
+  exactly one Rust function.
+- Comparing a type placed in an external interface with that interface's WIT.
+
+No Wasm target, wit-bindgen or jco run has been performed with generated output
+yet.

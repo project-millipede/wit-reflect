@@ -27,3 +27,7 @@ workspace = true
 [[test]]
 name = "type_reflection"
 required-features = ["derive"]
+
+[[test]]
+name = "operations"
+required-features = ["derive"]

@@ -1,6 +1,6 @@
 # Definitions and phases
 
-**Status: Phase 1 implemented, 2026-11-20. Phases 2–5 are planned, not started.**
+**Status: Phases 1 and 2 implemented, 2026-11-20. Phases 3–5 are planned, not started.**
 
 The goal is the generation model required by the generator comparison:
 
@@ -28,6 +28,11 @@ produces the WIT and, from Phase 4, the adaptation onto those bindings.
 | Adaptation | Generated lowering from owner values to wit-bindgen binding values. (Phase 4) |
 | Forwarding | Generated `Guest` and resource implementations that call the ordinary Rust operation. (Phase 4) |
 | Resolved package | The validated result of a schema. Only this can be rendered. |
+| Operation | A Rust function or method marked with `#[export]`. The attribute adds a hidden companion that reflects its signature. |
+| Operation reference | `operation!(Session::inspect)`: names that companion in a schema. |
+| Resource | A Rust type exported as a WIT `resource` with `#[derive(WitResource)]`. By value it is `own<r>`, behind a reference `borrow<r>`. |
+| External interface | An interface of a pinned dependency. Types placed there are imported with `use`, never defined locally. |
+| World | Named imports and exports. A target is a declared interface or an external interface path. |
 
 ## What each generator contributed
 
@@ -40,7 +45,10 @@ produces the WIT and, from Phase 4, the adaptation onto those bindings.
 | Struct-like case payload records | Fidius | A declared name, or one derived from the resolved variant name. |
 | Cross-interface type use | None | The placement rule and generated `use` lines. |
 | Failure detection | Fidius: errors for unsupported types | All diagnostics aggregated; compile-time rejection with tailored messages. |
-| Resources with constructors | WITGenstein | Free factory and per-method selection. (Phase 2) |
+| Resources with constructors | WITGenstein | Free factory returning `own<r>`, methods from several `impl` blocks, `&mut self`. |
+| Deliberate method selection | None (WITGenstein exports every inherent method) | Mark with `#[export]`, select in the schema. |
+| Declared error types in results | None (Fidius substitutes its framework error) | `Result<T, E>` is reflected as declared. |
+| World and export naming | Witty (configurable names) | Named exports, external imports and external `use`. |
 | Generated conversions and guest glue | Fidius | Generated against owner types, not an author model. (Phase 4) |
 | Semantic projections | None | Representation rules. (Phase 3) |
 
@@ -71,12 +79,37 @@ Against the acceptance criteria: criterion 1 (direct type reuse) is met for type
 definitions; the type half of criteria 2 and 4 follows from it. Nothing has been
 run against the workbench's real `Session::inspect` types yet.
 
-### Phase 2 — Operations and worlds
+### Phase 2 — Operations and worlds (done)
 
-Free functions; resources reflected from `impl` blocks with per-method selection;
-constructor and free factory (`func() -> own<session>`); borrowed receivers and
-parameters; worlds with exports and imports; references to pinned external WIT
-such as `apple-code:filesystem/source.{read-error}`. Completes criterion 2.
+The complete WIT contract from real Rust signatures.
+
+- `#[export]` on functions and methods; `operation!` to select them.
+- `#[derive(WitResource)]`; methods, static functions and constructors;
+  `own` and `borrow` handles from the Rust signature.
+- `Schema::external_interface` for types a dependency defines.
+- `Schema::world` with imports, exports and named exports.
+- Types used only in a signature are placed by the Phase 1 rule.
+
+Evidence: `crates/wit-reflect/tests/operations.rs`.
+
+| Test | What it establishes |
+| --- | --- |
+| `session_operations_render_the_handwritten_contract` | Listed methods from two `impl` blocks, `%resource: string` from `&str`, the factory's `own<session>`, a signature-only type, the external `use` and the world equal the handwritten text. Unlisted and unmarked methods are absent. |
+| `rendered_contract_is_accepted_with_its_dependencies` | That text resolves in `wit-parser` 0.261 together with its two dependency packages. |
+
+Against the acceptance criteria: criterion 2 (complete WIT generation) is met for
+a contract whose operations map one-to-one to Rust functions. It has been shown
+on fixtures shaped like the workbench contract, not on the workbench crates.
+
+Limits:
+
+- One Rust function maps to one WIT function. The production `open-file`, which
+  calls `select_child(.., File)`, needs an ordinary Rust method first.
+- `async fn`, consuming `self`, generic functions, `impl Trait`, `&mut`
+  parameters and reference results are rejected at compile time.
+- A type placed in an external interface is not compared with that interface's
+  WIT. A mismatch surfaces when bindings are compiled.
+- A handle nested in a borrowed container, such as `&[Session]`, stays `own`.
 
 ### Phase 3 — Representation rules
 
@@ -105,3 +138,7 @@ propagation proof (criterion 4), and removal of the handwritten WIT and adapters
   The macro resolves paths against the manifest directory.
 - Whether payload-free Rust enums used as inputs need lifting support.
 - How rules address types this workspace does not own, such as `object` wrappers.
+- How `&mut self` methods are forwarded from a WIT method, which receives a
+  shared borrow. The production adapter uses a `RefCell`.
+- Whether the many-to-one mapping onto an external type, such as three Rust
+  error cases onto `read-error`, is a representation rule or a declared owner.

@@ -61,6 +61,66 @@
 //! assigns each type one owning interface and one name, validates the result,
 //! and reports every problem it finds in one [`SchemaErrors`].
 //!
+//! # Operations
+//!
+//! Functions and methods are marked where they are declared and selected where
+//! the contract is declared. Marking reflects the real signature; nothing is
+//! exported until a schema lists it.
+//!
+#![cfg_attr(feature = "derive", doc = "```")]
+#![cfg_attr(not(feature = "derive"), doc = "```ignore")]
+//! use wit_reflect::{Schema, WitResource, export, operation};
+//!
+//! #[derive(WitResource)]
+//! struct Session {
+//!     selection: Option<String>,
+//! }
+//!
+//! impl Session {
+//!     #[export]
+//!     fn select(&mut self, resource: &str) {
+//!         self.selection = Some(resource.to_owned());
+//!     }
+//! }
+//!
+//! #[export]
+//! fn create_session() -> Session {
+//!     Session { selection: None }
+//! }
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut schema = Schema::new("example:files@0.1.0".parse()?);
+//! let mut native = schema.interface("native");
+//! native
+//!     .resource::<Session>()
+//!     .method(operation!(Session::select));
+//! native.function(operation!(create_session));
+//! schema.world("files").export("native");
+//!
+//! let package = schema.resolve()?;
+//! let expected_wit = "\
+//! package example:files@0.1.0;
+//!
+//! interface native {
+//!   resource session {
+//!     select: func(%resource: string);
+//!   }
+//!
+//!   create-session: func() -> own<session>;
+//! }
+//!
+//! world files {
+//!   export native;
+//! }
+//! ";
+//! assert_eq!(package.to_string(), expected_wit);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`Schema::external_interface`] places types that a dependency package
+//! already defines, so they are imported instead of redefined.
+//!
 //! # Keeping ordinary builds independent
 //!
 //! Gate the derive behind a default-off feature of the owning crate, so its
@@ -74,11 +134,13 @@
 //!
 //! # Current scope
 //!
-//! This crate generates type definitions. Functions, resources, worlds,
-//! representation rules and generated adapters are later phases; see
-//! `docs/phases.md` in the repository.
+//! This crate generates the WIT contract: types, functions, resources and
+//! worlds. Representation rules and the generated adapters that connect the
+//! contract to the Rust implementation are later phases; see `docs/phases.md`
+//! in the repository.
 
 mod error;
+mod function;
 mod graph;
 mod identifier;
 mod package_name;
@@ -89,12 +151,15 @@ mod schema;
 mod types;
 
 pub use error::{SchemaError, SchemaErrors};
+pub use function::{Function, Method, Param};
 pub use graph::TypeGraph;
 pub use identifier::IdentifierError;
 pub use package_name::{PackageName, PackageNameError};
-pub use reflect::WitType;
+pub use reflect::{Resource, WitType};
 pub use resolve::ResolvedPackage;
-pub use schema::{InterfaceBuilder, Schema};
+pub use schema::{
+    ExternalInterfaceBuilder, InterfaceBuilder, ResourceBuilder, Schema, WorldBuilder,
+};
 pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 
 /// Derives [`WitType`](trait@WitType) for a struct or enum.
@@ -121,3 +186,57 @@ pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 /// rejected because boundary values are owned.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::WitType;
+
+/// Derives [`WitType`](trait@WitType) and [`Resource`] for a type exported as
+/// a WIT `resource`.
+///
+/// The type's fields are not reflected: a resource crosses the boundary as a
+/// handle. Its exported functions are marked with [`macro@export`] and selected
+/// by the schema.
+///
+/// `#[wit(name = "…")]` sets the resource's name; the default is the Rust name
+/// in kebab case. `#[wit(crate = path)]` names this crate when it is
+/// re-exported elsewhere.
+#[cfg(feature = "derive")]
+pub use wit_reflect_macros::WitResource;
+
+/// Makes the signature of a function or method available to a [`Schema`].
+///
+/// The function itself is unchanged. Its name, parameter names, types and
+/// documentation are reflected from the declaration, and it becomes part of a
+/// contract only when a schema lists it with [`operation!`](macro@operation).
+///
+/// | Rust | WIT |
+/// | --- | --- |
+/// | `&self` or `&mut self` | a method of the resource |
+/// | no receiver, `#[export(static)]` | `static func` |
+/// | no receiver, `#[export(constructor)]` | `constructor` |
+/// | no receiver, no marker | a function of an interface |
+/// | parameter `&str`, `&[T]`, `&T` | `string`, `list<T>`, `T` |
+/// | parameter `&R` where `R` is a resource | `borrow<r>` |
+/// | resource `R` by value | `own<r>` |
+/// | no return type | no result |
+///
+/// `#[export(name = "…")]` sets the WIT name; the default is the Rust name in
+/// kebab case. `#[export(crate = path)]` names this crate when it is
+/// re-exported elsewhere.
+///
+/// Not exported: `async fn`, `unsafe fn`, generic functions, `impl Trait`,
+/// methods that consume `self`, `&mut` parameters, pattern parameters and
+/// reference results. Each is a compile error at the function.
+///
+/// To keep the owning crate's ordinary build independent of this crate, apply
+/// it as `#[cfg_attr(feature = "wit", wit_reflect::export)]`.
+#[cfg(feature = "derive")]
+pub use wit_reflect_macros::export;
+
+/// Refers to the reflected signature of a function marked with
+/// [`macro@export`], for [`InterfaceBuilder::function`] and
+/// [`ResourceBuilder::method`].
+///
+/// ```text
+/// interface.function(operation!(create_session));
+/// interface.resource::<Session>().method(operation!(Session::inspect));
+/// ```
+#[cfg(feature = "derive")]
+pub use wit_reflect_macros::operation;

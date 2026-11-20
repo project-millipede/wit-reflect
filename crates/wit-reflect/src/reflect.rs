@@ -46,6 +46,13 @@ pub trait WitType: 'static {
     fn wit_type(graph: &mut TypeGraph) -> Type;
 }
 
+/// A Rust type exported as a WIT `resource`.
+///
+/// Derive it with `#[derive(WitResource)]`. A resource crosses the boundary as
+/// a handle: `own<R>` where the Rust signature passes the value, `borrow<R>`
+/// where it passes a reference.
+pub trait Resource: WitType {}
+
 macro_rules! primitive {
     ($($rust:ty => $wit:ident),* $(,)?) => {
         $(
@@ -72,6 +79,21 @@ primitive! {
     f64 => F64,
     char => Char,
     String => String,
+}
+
+/// The referent of a `&str` parameter.
+impl WitType for str {
+    fn wit_type(_graph: &mut TypeGraph) -> Type {
+        Type::String
+    }
+}
+
+/// The referent of a `&[T]` parameter.
+impl<T: WitType> WitType for [T] {
+    fn wit_type(graph: &mut TypeGraph) -> Type {
+        let element = T::wit_type(graph);
+        Type::list(element)
+    }
 }
 
 impl<T: WitType> WitType for Vec<T> {

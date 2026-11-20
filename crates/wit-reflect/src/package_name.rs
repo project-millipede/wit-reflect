@@ -69,6 +69,32 @@ impl fmt::Display for PackageName {
     }
 }
 
+/// Check `path` against `namespace:package/interface` with an optional `@version`.
+///
+/// On failure, returns the reason as the tail of a sentence.
+pub(crate) fn validate_interface_path(path: &str) -> Result<(), String> {
+    let (unversioned_path, version_text) = match path.split_once('@') {
+        Some((unversioned_path, version_text)) => (unversioned_path, Some(version_text)),
+        None => (path, None),
+    };
+    let Some((package_text, interface)) = unversioned_path.split_once('/') else {
+        return Err("it does not follow `namespace:package/interface`".to_owned());
+    };
+    identifier::validate(interface)
+        .map_err(|error| format!("the interface is not a WIT identifier: {error}"))?;
+
+    // The package part follows the package-name grammar, version included.
+    let package_text = match version_text {
+        Some(version_text) => format!("{package_text}@{version_text}"),
+        None => package_text.to_owned(),
+    };
+    let package_parse = package_text.parse::<PackageName>();
+    match package_parse {
+        Ok(_) => Ok(()),
+        Err(error) => Err(error.reason.to_string()),
+    }
+}
+
 /// A package name that does not follow `namespace:name` or `namespace:name@version`.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid WIT package name `{input}`: {reason}")]

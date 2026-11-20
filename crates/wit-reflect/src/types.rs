@@ -96,8 +96,12 @@ pub enum Type {
     /// The empty tuple is Rust's unit type. WIT has no unit value, so it is
     /// accepted only as a side of [`Type::Result`].
     Tuple(Vec<Type>),
-    /// A reference to a named definition in the type graph.
+    /// A reference to a named record, variant or enum in the type graph.
     Named(TypeKey),
+    /// `own<R>`: an owned handle to a resource.
+    Own(TypeKey),
+    /// `borrow<R>`: a handle to a resource that the callee does not keep.
+    Borrow(TypeKey),
 }
 
 impl Type {
@@ -122,12 +126,32 @@ impl Type {
         }
     }
 
+    /// This type as seen through a Rust reference.
+    ///
+    /// A borrowed resource becomes `borrow<R>`. Data is lowered by value, so
+    /// every other type is unchanged.
+    #[must_use]
+    pub fn borrowed(self) -> Self {
+        match self {
+            Self::Own(key) => Self::Borrow(key),
+            other => other,
+        }
+    }
+
     pub(crate) fn is_unit(&self) -> bool {
         matches!(self, Self::Tuple(elements) if elements.is_empty())
     }
+
+    /// The definition this type names directly, if it is a named type.
+    pub(crate) fn definition_key(&self) -> Option<TypeKey> {
+        match self {
+            Self::Named(key) | Self::Own(key) => Some(*key),
+            _ => None,
+        }
+    }
 }
 
-/// A named WIT definition reflected from one Rust struct or enum.
+/// A named WIT definition reflected from one Rust type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeDef {
     name: &'static str,
@@ -140,6 +164,8 @@ pub(crate) enum TypeDefKind {
     Record(Vec<Field>),
     Variant(Vec<Case>),
     Enum(Vec<EnumCase>),
+    /// Functions are attached by the schema that exports the resource.
+    Resource,
 }
 
 impl TypeDef {
@@ -159,6 +185,12 @@ impl TypeDef {
     #[must_use]
     pub fn enumeration(name: &'static str, cases: Vec<EnumCase>) -> Self {
         Self::new(name, TypeDefKind::Enum(cases))
+    }
+
+    /// A `resource`. The schema that declares it lists its methods.
+    #[must_use]
+    pub fn resource(name: &'static str) -> Self {
+        Self::new(name, TypeDefKind::Resource)
     }
 
     fn new(name: &'static str, kind: TypeDefKind) -> Self {

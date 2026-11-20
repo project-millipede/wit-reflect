@@ -4,27 +4,24 @@
 //! rejected here, at the declaration, instead of producing a schema that fails
 //! later.
 
-use heck::ToKebabCase;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::ext::IdentExt;
 use syn::punctuated::Punctuated;
 use syn::{
-    Attribute, Data, DataEnum, DataStruct, DeriveInput, Field, Fields, FieldsNamed, Generics,
-    Ident, LitStr, Path, Token, Variant, parse_quote,
+    Data, DataEnum, DataStruct, DeriveInput, Field, Fields, FieldsNamed, Generics, Ident, LitStr,
+    Path, Token, Variant, parse_quote,
 };
 
-use crate::attributes::{self, ContainerAttributes, Errors, FieldAttributes, VariantAttributes};
+use crate::attributes::{ContainerAttributes, Errors, FieldAttributes, VariantAttributes};
+use crate::names::{kebab_name, runtime_path, with_docs};
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let mut errors = Errors::default();
 
     let container = ContainerAttributes::parse(&input.attrs, &mut errors);
-    let runtime = match &container.crate_path {
-        Some(crate_path) => crate_path.clone(),
-        None => parse_quote!(::wit_reflect),
-    };
-    let generics = bounded_generics(&input.generics, &runtime, &mut errors);
+    let runtime = runtime_path(container.crate_path.as_ref());
+    let reflection_bound = quote! { #runtime::WitType };
+    let generics = bounded_generics(&input.generics, &reflection_bound, &mut errors);
 
     // After a reported error the partial body is discarded with `finish`.
     let body = match &input.data {
@@ -49,8 +46,12 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     })
 }
 
-/// Require `WitType` of every type parameter, since its fields may use it.
-fn bounded_generics(generics: &Generics, runtime: &Path, errors: &mut Errors) -> Generics {
+/// Require `bound` of every type parameter and reject borrowed data.
+pub(crate) fn bounded_generics(
+    generics: &Generics,
+    bound: &TokenStream,
+    errors: &mut Errors,
+) -> Generics {
     for lifetime in generics.lifetimes() {
         errors.report(
             lifetime,
@@ -67,7 +68,7 @@ fn bounded_generics(generics: &Generics, runtime: &Path, errors: &mut Errors) ->
     for type_parameter in type_parameters {
         where_clause
             .predicates
-            .push(parse_quote!(#type_parameter: #runtime::WitType));
+            .push(parse_quote!(#type_parameter: #bound));
     }
     bounded
 }
@@ -192,7 +193,7 @@ fn enum_cases(
         if let Some(payload) = &variant_attributes.payload {
             errors.report(payload, "`payload` applies only to struct-like variants");
         }
-        let name = member_name(&variant.ident, variant_attributes.name.as_ref());
+        let name = kebab_name(&variant.ident, variant_attributes.name.as_ref());
         let docs = with_docs(&variant.attrs);
         cases.push(quote! { #runtime::EnumCase::new(#name) #docs });
     }
@@ -207,7 +208,7 @@ fn variant_cases(
     let mut cases = Vec::with_capacity(variants.len());
     for variant in variants {
         let variant_attributes = VariantAttributes::parse(&variant.attrs, errors);
-        let name = member_name(&variant.ident, variant_attributes.name.as_ref());
+        let name = kebab_name(&variant.ident, variant_attributes.name.as_ref());
         let docs = with_docs(&variant.attrs);
 
         let payload = match &variant.fields {
@@ -276,7 +277,7 @@ fn record_fields(fields: &FieldsNamed, runtime: &Path, errors: &mut Errors) -> V
             // `FieldsNamed` always carries identifiers.
             continue;
         };
-        let name = member_name(ident, field_attributes.name.as_ref());
+        let name = kebab_name(ident, field_attributes.name.as_ref());
         let field_type = reflect(field, runtime);
         let docs = with_docs(&field.attrs);
         field_definitions.push(quote! { #runtime::Field::new(#name, #field_type) #docs });
@@ -291,27 +292,5 @@ fn reflect(field: &Field, runtime: &Path) -> TokenStream {
 }
 
 fn container_name(input: &DeriveInput, container: &ContainerAttributes) -> LitStr {
-    member_name(&input.ident, container.name.as_ref())
-}
-
-/// The declared name, or the Rust identifier in kebab case.
-///
-/// A raw identifier such as `r#type` names `type`; rendering escapes keywords.
-fn member_name(ident: &Ident, declared_name: Option<&LitStr>) -> LitStr {
-    match declared_name {
-        Some(declared_name) => declared_name.clone(),
-        None => {
-            let rust_name = ident.unraw().to_string();
-            let kebab_name = rust_name.to_kebab_case();
-            LitStr::new(&kebab_name, ident.span())
-        }
-    }
-}
-
-/// `.with_docs("…")` when the item is documented, otherwise nothing.
-fn with_docs(item_attributes: &[Attribute]) -> TokenStream {
-    match attributes::docs(item_attributes) {
-        Some(documentation) => quote! { .with_docs(#documentation) },
-        None => TokenStream::new(),
-    }
+    kebab_name(&input.ident, container.name.as_ref())
 }
