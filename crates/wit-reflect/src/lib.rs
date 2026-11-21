@@ -239,9 +239,8 @@
 //!
 //! This crate generates the WIT contract and the code that connects it to the
 //! Rust implementation, for wit-bindgen 0.63. Parameters are limited to plain
-//! values and borrowed resources, and operations are synchronous. Applying it
-//! to a production component is the remaining phase; see `docs/phases.md` in
-//! the repository.
+//! values and borrowed resources, and operations are synchronous. `docs/phases.md`
+//! in the repository records the evidence and the limits of each phase.
 
 mod bindings;
 pub mod component;

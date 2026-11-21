@@ -1,8 +1,6 @@
 # Definitions and phases
 
-**Status: Phases 1 to 4 and 6 implemented, 2026-11-21. Phase 5, the workbench
-conversion, is under way on a workbench branch and continues on the result of
-Phase 6. Phase 7 is planned.**
+**Status: Phases 1 to 6 implemented, 2026-11-21. Phase 7 is planned.**
 
 The goal is the generation model required by the generator comparison:
 
@@ -290,17 +288,35 @@ Limits:
   the same resource is running.
 - `async fn` is not supported.
 
-### Phase 5 — Build integration and qualification (under way)
+### Phase 5 — Build integration and qualification (done)
 
-Generator entry point and wit-bindgen wiring. Then, on a workbench branch: the
-five `Session::inspect` scenarios natively and through jco, the field-change
-propagation proof (criterion 4), and removal of the handwritten WIT and adapters
-(criterion 5).
+The workbench's component boundary is generated. Its branch
+`feature/wit-reflect` holds the change and its own record,
+`docs/libraries/wit-reflect-adoption.md`, with the full evidence.
 
-The owner crates are annotated and the real contract is generated on the
-workbench branch. Converting the component crate was paused for Phase 6, so
-that the nine types the workbench maps with `with` today keep crossing
-unchanged.
+- The owner crates carry 53 annotation lines behind a default-off feature, and
+  three more describe `object` values. No name is set by hand.
+- The handwritten WIT (232 lines) and three adapter files (302 lines) are gone.
+- The nine types the workbench mapped with `with` by hand cross unchanged, from
+  generated mappings and with no annotation for it.
+- The five `Session::inspect` scenarios ran against the production component
+  under jco 1.42: the successful report equals the frozen output of the
+  handwritten adapter, and the failures carry the same messages in the shape
+  of the Rust types.
+- A field renamed in its owning type reached the WIT, the TypeScript
+  declaration and the lines that read it, with no conversion code edited
+  (criterion 4). The handwritten boundary is removed (criterion 5).
+
+Findings for this library:
+
+- jco 1.40 declares the record of a struct-like case and the case itself under
+  one TypeScript name, which TypeScript merges silently. jco 1.42 inlines the
+  case. The default payload name `<variant>-<case>` is unchanged.
+- Hand-set names exist only to differ from the Rust name. A `name` that
+  restated the derived one had gone unnoticed in the fixture.
+
+Not verified there: the browser path with the native service, and several
+acquisition failures in one inspection.
 
 ### Phase 6 — Unchanged types and wit-bindgen 0.63 (done)
 
@@ -404,10 +420,64 @@ instantiation names and the world. Phase 7 moves what can be moved to the
 items themselves, so that the Rust sources are the single authority. It has
 no plan yet.
 
+## Alternatives to the derive, examined and not adopted
+
+The derive exists because a macro sees only the item it is attached to. Three
+ways to read a type without it were measured against the workbench and the
+`object` crate. None is adopted.
+
+### Compile-time reflection (`#![feature(type_info)]`)
+
+Probed on `nightly-2026-11-21` (rustc 1.102.0-nightly) with no derive on the
+types. It is the only route that describes a type of another crate without
+that crate's cooperation and with the compiler's own name resolution.
+
+| It reports | Probe result |
+| --- | --- |
+| Cases of a foreign enum, with their doc comments | `object::Endianness`: `Little`, `Big` and the documentation of each |
+| Fields of a struct: name, type, offset, doc comment | every field of the workbench's report types |
+| Width and sign of integers | `u32` and `i64` told apart |
+| Whether a type implements a trait | `object::macho::Version`: `Display`; `object::Endianness`: `Debug` but not `Display` |
+| Attributes of a registered tool, as text | `#[wit::display]` on a field |
+| `#[non_exhaustive]`, generic arguments, pointers, arrays | reported |
+
+| It does not report | Effect |
+| --- | --- |
+| A name for a type reached through a field | A nested type cannot be named in the contract unless it is written out somewhere. |
+| Discriminant values | An enum with explicit discriminants cannot be told from a plain one. |
+| Field visibility | Private fields look like public ones. |
+| Values | It describes types. Reading a field of a value needs `unsafe`, so conversion still needs generated code. |
+| Methods and functions | A representation built from a method, such as a value with its name, cannot be derived. |
+| Attributes of tools the defining crate did not register | Only this library's own attributes are readable. |
+
+A function that walks nested types on its own compiled only with the
+compiler-internal `rustc_attrs` feature. The API changed five times between
+2026-11-12 and 2026-11-20; doc comments arrived one nightly before the probe.
+The tracking issue, rust-lang/rust#146922, has no RFC yet.
+
+What it would replace once stable: a `remote` declaration of a plain foreign
+enum, whose cases and documentation it reports in full. It would not replace
+the derive, the conversion or the rules.
+
+### The compiler's JSON output (`rustdoc --output-format json`)
+
+Read for `binary-inspection` on a nightly from June 2026. It contains type
+names, doc comments, visibility and field types resolved through re-exports,
+which closes reflection's naming gap. It needs nightly for generation, its
+format is versioned and unstable, and conversion would have to be generated
+into the component crate, where private fields are out of reach.
+
+### Reading source files with `syn`
+
+`syn` parses text on stable Rust. On `object` 0.40 it read `Endianness` with
+its documentation. It did not find `FileType`, which `object` defines through
+its own macro: `syn` expands no macros and resolves no paths, so a generator
+built on it would have to redo that work of the compiler.
+
 ## Open points for later phases
 
-- Where the workbench runs generation and its check: its xtask already has
-  `wit fetch` and `wit check`.
+- Replace `remote` declarations of plain foreign enums with compile-time
+  reflection if `type_info` stabilises.
 - Whether the workbench needs records or enums as inputs, which would require
   lifting.
 - Unchanged crossing for enums whose cases carry data, and for generic types

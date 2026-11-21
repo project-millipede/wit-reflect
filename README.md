@@ -2,11 +2,12 @@
 
 Generate WIT directly from the Rust types an implementation already uses.
 
-**Status: Phases 1 to 4 of 5 are implemented.** From ordinary Rust types and
-operations the library generates the WIT contract, the conversion of results
-and the code that forwards each exported function to its Rust operation. A
-fixture component built this way runs under jco. Applying it to the workbench
-is the remaining phase; see [the phase plan](docs/phases.md).
+**Status: Phases 1 to 6 are implemented.** From ordinary Rust types and
+operations the library generates the WIT contract, the bindings setup, the
+conversion of results and the code that forwards each exported function to
+its Rust operation. A fixture component built this way runs under jco, and one
+production component is generated with it. See
+[the phase plan](docs/phases.md) for the evidence and the limits.
 
 New here? Read [the developer guide](docs/guide.md): what you write, what is
 generated, what is not, and a complete worked example.
@@ -293,5 +294,3 @@ cargo run -p session-owner --bin generate -- --check
 - Crossing unchanged for generic types and for enums whose cases carry data.
   They are converted.
 - Comparing a type placed in an external interface with that interface's WIT.
-
-The workbench itself has not been converted yet.
