@@ -3,18 +3,17 @@
 //! Everything this crate adds to `session-owner` is generated:
 //!
 //! - `wit/session.wit`, the contract;
-//! - the bindings below, by wit-bindgen from that contract;
+//! - `src/bindings.rs`, the schema's part of the `wit_bindgen::generate!` call;
 //! - `src/forwarding.rs`, the implementation of the binding traits.
 //!
-//! Both files are written by `cargo run -p session-owner --bin generate`.
+//! The three files are written by `cargo run -p session-owner --bin generate`.
 
-wit_bindgen::generate!({
-    path: "wit",
-    world: "example:session/session@0.1.0",
-    // Lets generated forwarding assemble every binding value from the wire
-    // parts of an owner value.
-    additional_derives: [wit_reflect::FromParts],
-});
+// Defines `generate_bindings!`, which knows the world, the types that cross
+// unchanged and the derive that forwarding needs.
+include!("bindings.rs");
+
+// Only the location of the WIT files is this crate's own.
+generate_bindings! { path: "wit" }
 
 // Generated text is not formatted; it is compared byte for byte instead.
 #[rustfmt::skip]
@@ -27,15 +26,19 @@ export!(Component);
 
 #[cfg(test)]
 mod tests {
-    use session_owner::Session;
+    use session_owner::{MachoValue, Progress, Session, StepKind};
     use wit_reflect::component::ResourceCell;
 
     use crate::exports::example::session::binary::{Endianness, ErrorKind};
-    use crate::exports::native::{GuestSession, InspectionFailureKind, StepKind};
+    use crate::exports::native::{GuestSession, InspectionFailureKind};
 
-    /// The operations run through the generated forwarding and return values
-    /// of wit-bindgen's own types. Each assertion is one rule or one piece of
-    /// structure that lowering and assembly must agree on.
+    /// The operations run through the generated forwarding and return the
+    /// values the bindings pass on. Each assertion is one rule or one piece
+    /// of structure that lowering and assembly must agree on.
+    ///
+    /// Where a binding is annotated with a `session_owner` type, the bindings
+    /// use that owner type itself, so the annotation only compiles while the
+    /// type crosses unchanged.
     ///
     /// Resource handles exist only inside a Wasm instance, so the session is
     /// placed in its cell directly instead of through the factory.
@@ -58,10 +61,15 @@ mod tests {
         session.select("undecodable".to_owned());
         let undecodable_outcome = session.inspect("undecodable".to_owned());
 
+        // 4. An unchanged record, returned as the owner type.
+        let progress: Progress = session.progress();
+
         assert_eq!(selection.as_deref(), Some("application"));
 
         let first_step = &first_outcome.steps[0];
-        assert!(matches!(first_step.kind, StepKind::Inspect));
+        // An unchanged enum held by a converted generic carrier.
+        let first_kind: StepKind = first_step.kind;
+        assert_eq!(first_kind, StepKind::Inspect);
         let report = first_step
             .result
             .as_ref()
@@ -70,9 +78,10 @@ mod tests {
         let image = &report.images[0];
         // `remote` + `into`
         assert!(matches!(image.endianness, Endianness::Little));
-        // `into` through `From`
+        // `into` through `From`, producing an unchanged value
+        let file_type: &MachoValue = &image.file_type;
         assert_eq!(
-            (image.file_type.value, image.file_type.name.as_deref()),
+            (file_type.value, file_type.name.as_deref()),
             (2, Some("MH_EXECUTE"))
         );
         // `with`: the name depends on the sibling file type
@@ -132,5 +141,11 @@ mod tests {
             panic!("expected the analysis case, got {:?}", undecodable.kind);
         };
         assert!(matches!(&analysis.kind, ErrorKind::Decode(text) if text == "invalid magic"));
+
+        // Unchanged values arrive intact, also inside an option.
+        assert_eq!(
+            (progress.last_step, progress.inspections),
+            (Some(StepKind::Inspect), 5)
+        );
     }
 }

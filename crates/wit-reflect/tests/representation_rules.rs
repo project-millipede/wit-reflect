@@ -72,7 +72,6 @@ enum Endianness {
 
 // One wire record shared by every wrapped foreign number.
 #[derive(WitType)]
-#[wit(name = "macho-value")]
 struct MachoValue {
     value: u32,
     name: Option<String>,

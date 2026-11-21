@@ -42,13 +42,21 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
     let name = kebab_name(&input.ident, container.name.as_ref());
     let docs = with_docs(&input.attrs);
-    let reflection = shape.reflection(&name, &docs, &container, &runtime);
-    let Lowering { parts, body } = shape.lowering(&container, &runtime);
-
     let ident = &input.ident;
+    let lower = quote! { #runtime::lower };
+    let crossing = Crossing::of(input, &container, &shape);
+    let details = crossing.reflected_details(&docs, ident, &container, &runtime);
+    let reflection = shape.reflection(&name, &details, &container, &runtime);
+    let CrossingCode {
+        passage,
+        parts,
+        body,
+        identity_assembly,
+    } = crossing.code(&shape, ident, &container, &runtime);
+
     let reflected_generics = with_bounds(&input.generics, &quote! { #runtime::WitType });
     let (reflect_impl, type_generics, reflect_where) = reflected_generics.split_for_impl();
-    let lowered_generics = with_bounds(&input.generics, &quote! { #runtime::lower::Lower });
+    let lowered_generics = with_bounds(&input.generics, &quote! { #lower::Lower });
     let (lower_impl, _, lower_where) = lowered_generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
@@ -59,7 +67,8 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         }
 
         #[automatically_derived]
-        impl #lower_impl #runtime::lower::Lower for #ident #type_generics #lower_where {
+        impl #lower_impl #lower::Lower for #ident #type_generics #lower_where {
+            type Passage = #passage;
             type Parts = #parts;
 
             fn lower(self) -> Self::Parts {
@@ -67,8 +76,169 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             }
         }
 
+        #identity_assembly
+
         #remote_conversion
     })
+}
+
+/// How the derive lets a type cross, from what it can see on the item alone.
+enum Crossing<'input> {
+    /// Taken apart and assembled into the binding's own type.
+    Converted,
+    /// A record, or an enum of unit cases, that the binding can use itself
+    /// if the type is `Clone` and `Debug` and every one of these field
+    /// types crosses unchanged. The compiler decides both.
+    Plain(Vec<&'input syn::Type>),
+}
+
+impl<'input> Crossing<'input> {
+    /// A type may cross unchanged only if the binding could use it as it is:
+    /// public, without parameters, with the shape and names its WIT definition
+    /// has, and with no rule that changes a value.
+    fn of(
+        input: &'input DeriveInput,
+        container: &ContainerAttributes,
+        shape: &Shape<'input>,
+    ) -> Self {
+        let is_public = matches!(input.vis, syn::Visibility::Public(_));
+        let changes_shape = container.convert.is_some()
+            || container.remote.is_some()
+            || !container.computed_fields.is_empty();
+        if !is_public || changes_shape || !input.generics.params.is_empty() {
+            return Self::Converted;
+        }
+        match shape {
+            Shape::Record(fields) if fields.iter().all(FieldPlan::is_stored_as_declared) => {
+                let field_types = fields.iter().map(|field| &field.field.ty).collect();
+                Self::Plain(field_types)
+            }
+            Shape::Enum(cases) if cases.iter().all(CasePlan::is_plain_unit) => {
+                Self::Plain(Vec::new())
+            }
+            Shape::Record(_) | Shape::Transparent(_) | Shape::Enum(_) => Self::Converted,
+        }
+    }
+
+    /// The documentation of the reflected definition, followed by where the
+    /// component crate names the type if it crosses unchanged.
+    ///
+    /// Whether it does is known only once its field types are resolved, so the
+    /// generated code asks the type's own passage.
+    fn reflected_details(
+        &self,
+        docs: &TokenStream,
+        ident: &Ident,
+        container: &ContainerAttributes,
+        runtime: &Path,
+    ) -> TokenStream {
+        match self {
+            Self::Converted => docs.clone(),
+            Self::Plain(_) => {
+                let lower = quote! { #runtime::lower };
+                let owner_path = owner_path(ident, container);
+                quote! {
+                    #docs
+                    .unchanged_at(
+                        if <<Self as #lower::Lower>::Passage as #lower::Passage>::UNCHANGED {
+                            ::core::option::Option::Some(#owner_path)
+                        } else {
+                            ::core::option::Option::None
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    /// The members of the `Lower` implementation, and the assembly a plain
+    /// type needs when a converted parent holds it.
+    fn code(
+        &self,
+        shape: &Shape<'_>,
+        ident: &Ident,
+        container: &ContainerAttributes,
+        runtime: &Path,
+    ) -> CrossingCode {
+        let lower = quote! { #runtime::lower };
+        let field_types = match self {
+            Self::Converted => {
+                let Lowering { parts, body } = shape.lowering(container, runtime, &quote! { self });
+                return CrossingCode {
+                    passage: quote! { #lower::Converted },
+                    parts,
+                    body,
+                    identity_assembly: TokenStream::new(),
+                };
+            }
+            Self::Plain(field_types) => field_types,
+        };
+
+        let whole = format_ident!("__wit_whole");
+        let Lowering { parts, body } = shape.lowering(container, runtime, &quote! { #whole });
+        // The bindings must be able to use the type itself, which no macro can
+        // see: `BY_BINDINGS` is the inherent constant if the type is `Clone`
+        // and `Debug`, otherwise the default of the imported trait.
+        let usable = quote! {
+            <#lower::Is<{
+                #[allow(unused_imports, reason = "used only when the inherent constant is absent")]
+                use #lower::NotUsable as _;
+                <#lower::Usable<#ident>>::BY_BINDINGS
+            }> as #lower::Answer>::Passage
+        };
+        // Unchanged only if every field type is, too.
+        let passage = field_types.iter().rev().fold(usable, |rest, field_type| {
+            quote! {
+                <<#field_type as #lower::Lower>::Passage as #lower::Passage>::And<#rest>
+            }
+        });
+        CrossingCode {
+            passage,
+            parts: quote! { <Self::Passage as #lower::Passage>::Crossing<Self, #parts> },
+            // The closure states its result, which the return type no longer
+            // determines once it depends on the passage.
+            body: quote! {
+                <Self::Passage as #lower::Passage>::cross(self, |#whole: Self| -> #parts { #body })
+            },
+            // A converted parent assembles a field of this type from the value
+            // itself.
+            identity_assembly: quote! {
+                #[automatically_derived]
+                impl #lower::FromParts<#ident> for #ident {
+                    fn from_parts(parts: #ident) -> Self {
+                        parts
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// What [`Crossing::code`] contributes to the expansion.
+struct CrossingCode {
+    /// The associated `Passage` type.
+    passage: TokenStream,
+    /// The associated `Parts` type.
+    parts: TokenStream,
+    /// The body of `lower`.
+    body: TokenStream,
+    /// `impl FromParts<Self> for Self`, or nothing for a converted type.
+    identity_assembly: TokenStream,
+}
+
+/// The path at which the component crate names the type: `path = …` if given,
+/// otherwise the owner crate's root.
+fn owner_path(ident: &Ident, container: &ContainerAttributes) -> TokenStream {
+    match &container.public_path {
+        Some(public_path) => {
+            let written = public_path.to_token_stream().to_string().replace(' ', "");
+            quote! { #written }
+        }
+        None => {
+            let type_name = ident.to_string();
+            quote! { ::core::concat!(::core::env!("CARGO_CRATE_NAME"), "::", #type_name) }
+        }
+    }
 }
 
 /// A boundary value owns its data, so its type has no lifetime parameters.
@@ -183,12 +353,16 @@ struct FieldPlan<'input> {
     binding: Ident,
     /// The WIT field name. `None` for an unnamed field.
     name: Option<LitStr>,
+    /// Whether `name = "…"` replaces the name derived from the identifier.
+    is_renamed: bool,
     rule: Option<FieldRule>,
 }
 
 struct CasePlan<'input> {
     variant: &'input Variant,
     name: LitStr,
+    /// Whether `name = "…"` replaces the name derived from the identifier.
+    is_renamed: bool,
     payload: CasePayload<'input>,
 }
 
@@ -401,13 +575,18 @@ impl<'input> Shape<'input> {
         }
     }
 
-    /// The `Parts` type and the body of `lower`.
+    /// The `Parts` type and the body of `lower` for the value named `whole`.
     ///
     /// Functions of the whole value, for computed fields and `with` rules,
     /// run first because they borrow the value that is then taken apart.
-    fn lowering(&self, container: &ContainerAttributes, runtime: &Path) -> Lowering {
+    fn lowering(
+        &self,
+        container: &ContainerAttributes,
+        runtime: &Path,
+        whole: &TokenStream,
+    ) -> Lowering {
         let lower = quote! { #runtime::lower };
-        let computed = ComputedParts::plan(container, runtime);
+        let computed = ComputedParts::plan(container, runtime, whole);
 
         match self {
             Self::Record(fields) => {
@@ -417,7 +596,7 @@ impl<'input> Shape<'input> {
                 part_values.extend(exported(fields).map(|field| field.lowered(runtime)));
 
                 let computations = &computed.computations;
-                let field_computations = fields.iter().filter_map(FieldPlan::computation);
+                let field_computations = fields.iter().filter_map(|field| field.computation(whole));
                 let patterns = fields.iter().map(FieldPlan::named_pattern);
                 let part_list_type = nested_list(&part_types);
                 let part_list = nested_list(&part_values);
@@ -426,7 +605,7 @@ impl<'input> Shape<'input> {
                     body: quote! {
                         #(#computations)*
                         #(#field_computations)*
-                        let Self { #(#patterns),* } = self;
+                        let Self { #(#patterns),* } = #whole;
                         #lower::Fields(#part_list)
                     },
                 }
@@ -443,7 +622,7 @@ impl<'input> Shape<'input> {
                 Lowering {
                     parts: field.parts_type(runtime),
                     body: quote! {
-                        let #pattern = self;
+                        let #pattern = #whole;
                         #value
                     },
                 }
@@ -460,7 +639,7 @@ impl<'input> Shape<'input> {
                     .enumerate()
                     .map(|(position, case)| case.arm(position, runtime));
                 let selected_case = quote! {
-                    #lower::Cases(match self {
+                    #lower::Cases(match #whole {
                         #(#arms,)*
                     })
                 };
@@ -501,7 +680,7 @@ struct ComputedParts {
 }
 
 impl ComputedParts {
-    fn plan(container: &ContainerAttributes, runtime: &Path) -> Self {
+    fn plan(container: &ContainerAttributes, runtime: &Path, whole: &TokenStream) -> Self {
         let mut computations = Vec::new();
         let mut types = Vec::new();
         let mut values = Vec::new();
@@ -512,7 +691,7 @@ impl ComputedParts {
                 ..
             } = computed_field;
             let variable = format_ident!("__wit_computed_{position}");
-            computations.push(quote! { let #variable: #wire_type = (#function)(&self); });
+            computations.push(quote! { let #variable: #wire_type = (#function)(&#whole); });
             types.push(quote! { <#wire_type as #runtime::lower::Lower>::Parts });
             values.push(quote! { #runtime::lower::Lower::lower(#variable) });
         }
@@ -628,12 +807,22 @@ impl<'input> FieldPlan<'input> {
             field,
             binding,
             name,
+            is_renamed: attributes.name.is_some(),
             rule: attributes.rule.map(|declared| declared.rule),
         }
     }
 
     fn is_skipped(&self) -> bool {
         matches!(self.rule, Some(FieldRule::Skip))
+    }
+
+    /// Whether the binding could read this field from the owner type itself:
+    /// public, under the name its WIT field has, and with no rule.
+    fn is_stored_as_declared(&self) -> bool {
+        let is_public = matches!(self.field.vis, syn::Visibility::Public(_));
+        // A raw identifier is a keyword, which the binding spells differently.
+        let is_keyword = self.binding.to_string().starts_with("r#");
+        is_public && !is_keyword && !self.is_renamed && self.rule.is_none()
     }
 
     /// The expression reflecting the field's wire type.
@@ -679,7 +868,7 @@ impl<'input> FieldPlan<'input> {
     }
 
     /// The statement evaluating a `with` rule before the value is taken apart.
-    fn computation(&self) -> Option<TokenStream> {
+    fn computation(&self, whole: &TokenStream) -> Option<TokenStream> {
         let Some(FieldRule::Into {
             wire_type,
             function: Some(function),
@@ -688,7 +877,7 @@ impl<'input> FieldPlan<'input> {
             return None;
         };
         let variable = self.computed_variable();
-        Some(quote! { let #variable: #wire_type = (#function)(&self); })
+        Some(quote! { let #variable: #wire_type = (#function)(&#whole); })
     }
 
     /// Whether the stored field is read when lowering.
@@ -795,8 +984,19 @@ impl<'input> CasePlan<'input> {
         Self {
             variant,
             name,
+            is_renamed: attributes.name.is_some(),
             payload,
         }
+    }
+
+    /// Whether the binding could use this case of the owner enum itself.
+    ///
+    /// The binding lowers an enum by its discriminant, so an explicit
+    /// discriminant would select another case without any compile error.
+    fn is_plain_unit(&self) -> bool {
+        matches!(self.payload, CasePayload::Unit)
+            && self.variant.discriminant.is_none()
+            && !self.is_renamed
     }
 
     /// The `Case::new(..)` expression.

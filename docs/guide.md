@@ -12,8 +12,9 @@ contract once, and run a generator.
 | You write | wit-reflect generates | Other tools generate |
 | --- | --- | --- |
 | Rust types and functions, as today | The WIT file | Rust bindings, by wit-bindgen from that WIT |
-| `#[derive(WitType)]`, `#[export]` and rules on them | The forwarding file: the `impl Guest` blocks for those bindings | TypeScript bindings, by jco from the component |
-| One schema function | The conversion of every result, inside your derive | |
+| `#[derive(WitType)]`, `#[export]` and rules on them | The bindings file: the schema's part of the `wit_bindgen::generate!` call | TypeScript bindings, by jco from the component |
+| One schema function | The forwarding file: the `impl Guest` blocks for those bindings | |
+| | The conversion of every result, inside your derive | |
 
 There is no second data model. A field exists in one place: the Rust type.
 
@@ -119,8 +120,8 @@ pub fn schema() -> Result<Schema, Box<dyn Error>> {
 }
 ```
 
-The schema lists 5 of the 16 definitions in the generated WIT. `Image`,
-`FileRange`, `Failure` and eight more are not listed. They are found because
+The schema lists 5 of the 17 definitions in the generated WIT. `Image`,
+`FileRange`, `Failure` and nine more are not listed. They are found because
 the listed types and operations refer to them.
 
 ### 4. Generate
@@ -128,10 +129,11 @@ the listed types and operations refer to them.
 ```rust
 let package = schema()?.resolve()?;               // validates; reports every problem at once
 let wit = package.to_string();                    // the WIT file
-let forwarding = package.forwarding("session")?;  // the Rust file for the component
+let bindings = package.bindings("session")?;      // sets up the component's bindings
+let forwarding = package.forwarding("session")?;  // implements the binding traits
 ```
 
-The fixture wraps these three lines in a binary with two modes:
+The fixture wraps these four lines in a binary with two modes:
 
 ```bash
 cargo run -p session-owner --bin generate
@@ -141,8 +143,8 @@ cargo run -p session-owner --bin generate
 cargo run -p session-owner --bin generate -- --check
 ```
 
-The first rewrites the two files. The second changes nothing and fails when a
-committed file is stale.
+The first rewrites the three files. The second changes nothing and fails when
+a committed file is stale.
 
 ### 5. What comes out
 
@@ -193,6 +195,28 @@ world session {
 }
 ```
 
+The bindings file, `fixtures/session/component/src/bindings.rs`:
+
+```rust
+macro_rules! generate_bindings {
+    ($($options:tt)*) => {
+        ::wit_bindgen::generate!({
+            world: "example:session/session@0.1.0",
+            additional_derives: [::wit_reflect::FromParts],
+            with: {
+                "example:session/binary@0.1.0/macho-value": session_owner::MachoValue,
+                "example:session/native@0.1.0/step-kind": session_owner::StepKind,
+                "example:session/native@0.1.0/progress": session_owner::Progress,
+            },
+            $($options)*
+        });
+    };
+}
+```
+
+Each `with` entry is a type that crosses unchanged; see
+[Types that cross unchanged](#types-that-cross-unchanged).
+
 The forwarding file, `fixtures/session/component/src/forwarding.rs` (excerpt):
 
 ```rust
@@ -221,11 +245,8 @@ impl crate::exports::native::GuestSession for ::wit_reflect::component::Resource
 This is all of its handwritten code:
 
 ```rust
-wit_bindgen::generate!({
-    path: "wit",
-    world: "example:session/session@0.1.0",
-    additional_derives: [wit_reflect::FromParts],
-});
+include!("bindings.rs");
+generate_bindings! { path: "wit" }
 
 #[rustfmt::skip]
 mod forwarding;
@@ -233,6 +254,10 @@ use forwarding::Component;
 
 export!(Component);
 ```
+
+`generate_bindings!` already knows the world, the types that cross unchanged
+and the derive the forwarding needs. You pass what describes your crate: the
+WIT directory, and any other `wit_bindgen::generate!` option except `world`.
 
 ## The schema, call by call
 
@@ -303,7 +328,6 @@ pub enum Endianness { Little, Big }
 
 // A wrapped number: one wire record and a conversion per foreign type.
 #[derive(WitType)]
-#[wit(name = "macho-value")]
 pub struct MachoValue { pub value: u32, pub name: Option<String> }
 
 impl From<foreign::FileType> for MachoValue { /* into_inner(), name() */ }
@@ -317,7 +341,9 @@ a case, the `remote` declaration stops compiling.
 | Generated | By | When |
 | --- | --- | --- |
 | The WIT file | `ResolvedPackage: Display` | when you run the generator |
+| The bindings file | `ResolvedPackage::bindings` | when you run the generator |
 | The forwarding file | `ResolvedPackage::forwarding` | when you run the generator |
+| The decision which types cross unchanged | `#[derive(WitType)]` and the compiler | when the owner crate compiles |
 | The conversion of each result | `#[derive(WitType)]` | when the owner crate compiles |
 | The assembly of each binding value | `#[derive(FromParts)]`, attached by wit-bindgen | when the component crate compiles |
 | `From<Foreign>` for a `remote` declaration | `#[derive(WitType)]` | when the owner crate compiles |
@@ -326,9 +352,9 @@ a case, the `remote` declaration stops compiling.
 
 | Not generated: you write it | Size in the fixture |
 | --- | --- |
-| The schema function | 25 lines |
-| The program that writes and checks the two files | about 90 lines; the library has no ready-made command yet |
-| The component crate's bindings call, `mod` and `export!` | 9 lines |
+| The schema function | 26 lines |
+| The program that writes and checks the three files | about 95 lines; the library has no ready-made command yet |
+| The component crate's `include!`, bindings call, `mod` and `export!` | 6 lines |
 | Conversions and wire records for types of other crates | a few lines per foreign type |
 | Cargo wiring: dependencies and, if wanted, a default-off feature for the macros | a few lines |
 | The implementation of a world's imports | — |
@@ -343,7 +369,8 @@ a case, the `remote` declaration stops compiling.
 | A type that contains itself | compile error at the field |
 | One WIT function backed by anything but exactly one Rust function | write an ordinary Rust function for it first |
 | Checking a type placed in an external interface against that interface's WIT | not checked; a mismatch appears when the bindings compile |
-| Binding tools other than wit-bindgen 0.60 | the forwarding file follows its naming; a mismatch is a compile error |
+| Binding tools other than wit-bindgen 0.63 | the bindings and forwarding files follow its options and naming; a mismatch is a compile error |
+| Crossing unchanged for a generic type or an enum whose cases carry data | the type is converted |
 
 ## How a value crosses the boundary: wire parts
 
@@ -422,16 +449,47 @@ pub enum ErrorKind {
 Each `Next` means "a later case". `This` holds the payload; a unit case
 carries `()`.
 
-### If the fields are public
+### Types that cross unchanged
 
-Nothing changes. Private fields are only the case where no other approach
-works. Public fields would also allow copying field by field in the component
-crate, or, when no field needs a rule, wit-bindgen's `with` option, which uses
-the owner type as the binding type and converts nothing.
+Wire parts are for types whose binding differs from the owner type. When
+nothing differs, no conversion is needed: wit-bindgen's `with` option makes
+the bindings use the owner type itself. wit-reflect generates those `with`
+entries in the bindings file, and such a value is moved across as it is.
 
-wit-reflect does not use `with`. Every result goes through wire parts, even
-when the owner type and the binding type are identical. That costs a move of
-each field and a rebuild of each list, and has not been measured.
+A struct or enum crosses unchanged when all of this holds:
+
+| Condition | Why |
+| --- | --- |
+| It is `pub` and has no type parameters | The component crate must name it, and `with` accepts no generic arguments |
+| It is `Clone` and `Debug` | The bindings clone and print the values they hold |
+| No rule, computed field, `transparent`, `remote` or `name` on a member | The binding would differ in shape, value or name |
+| A struct has only `pub` fields | The bindings read the fields directly |
+| An enum has only unit cases without explicit discriminants | The bindings lower an enum by its discriminant |
+| Every type inside it crosses unchanged | A binding field has exactly one type |
+
+You declare nothing. The derive checks what is visible on the item, and the
+compiler decides the rest from the field types. A type that does not qualify
+is converted through wire parts. Both kinds mix freely:
+
+| In the fixture | Crosses | Because |
+| --- | --- | --- |
+| `StepKind`, `Progress`, `MachoValue` | unchanged | every condition holds |
+| `FailureKind` | converted | it is not `Clone` |
+| `FileRange` | converted | its fields are private |
+| `Report` | converted | it holds `Image`, which has rules |
+| `StepOutcome<StepKind, …>` | converted | it is generic; the `StepKind` inside still crosses unchanged |
+
+Two attributes on the type adjust the decision:
+
+| Attribute | Use it when |
+| --- | --- |
+| `#[wit(convert)]` | the type must be converted although it qualifies |
+| `#[wit(path = owner::module::Type)]` | the type is not exported at its crate's root, where the `with` entry names it by default |
+
+A `with` path that does not resolve is a compile error in the component
+crate. Inside a converted parent, a list or option of unchanged values is
+still rebuilt element by element; the standard library usually reuses the
+allocation, but that is not guaranteed.
 
 ### Are wire parts DTOs?
 
@@ -467,7 +525,7 @@ the WIT schema is invalid:
 - interface `native` would define `outcome` more than once, for `…Outcome<…Report…>` and `…Outcome<…SelectionState…>`
 - `…FileRange` is used by interfaces `headers`, `segments` but declared in none of them
 
-the forwarding file cannot be generated:
+the component's Rust files cannot be generated:
 - function `configure` of resource `session` takes `options`, whose type cannot be passed to Rust yet
 ```
 
@@ -475,8 +533,9 @@ When a committed contract no longer matches the Rust types:
 
 ```text
 error[E0277]: `u32` cannot be assembled from the wire parts `std::string::String`
-   = note: they differ in field order, count or type; regenerate the WIT and forwarding file
-           from the schema, then rebuild
+   = note: they differ in field order, count or type, or the bindings define a type of their
+           own where the owner type crosses unchanged; regenerate the WIT, bindings and
+           forwarding files from the schema, then rebuild
 ```
 
 ## Checklist for a new contract
@@ -486,7 +545,7 @@ error[E0277]: `u32` cannot be assembled from the wire parts `std::string::String
 2. Add a rule where the compiler reports a field without a WIT representation.
 3. Derive `WitResource` on each resource and mark its functions with `#[export]`.
 4. Write the schema function. Run the generator and fix what it reports.
-5. Commit the WIT and the forwarding file. Add the check to your test run.
-6. In the component crate, call `wit_bindgen::generate!` with
-   `additional_derives: [wit_reflect::FromParts]` and include the forwarding
-   module.
+5. Commit the WIT, the bindings file and the forwarding file. Add the check to
+   your test run.
+6. In the component crate, include the bindings file, call
+   `generate_bindings!` with your WIT path and include the forwarding module.

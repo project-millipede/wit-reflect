@@ -114,7 +114,8 @@ output makes such a change visible in review, and a test that compares the
 committed file with the generator's output keeps the two from drifting.
 
 Example: `cargo run -p session-owner --bin generate` rewrites the fixture's WIT
-and forwarding file; `-- --check` reports stale files and exits with an error.
+bindings file and forwarding file; `-- --check` reports stale files and exits
+with an error.
 
 ## 11. One plan, several outputs
 

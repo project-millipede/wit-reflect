@@ -156,6 +156,8 @@ impl Type {
 pub struct TypeDef {
     name: &'static str,
     docs: Option<&'static str>,
+    /// Where a component crate names the owner type, if it crosses unchanged.
+    owner_path: Option<&'static str>,
     kind: TypeDefKind,
 }
 
@@ -230,6 +232,7 @@ impl TypeDef {
         Self {
             name,
             docs: None,
+            owner_path: None,
             kind,
         }
     }
@@ -241,8 +244,24 @@ impl TypeDef {
         self
     }
 
+    /// State whether the binding uses the owner type itself.
+    ///
+    /// `owner_path` is the Rust path at which a component crate names the
+    /// type, such as `owner::Selection`. With a path, generated bindings map
+    /// the WIT type to that Rust type instead of defining their own, and no
+    /// conversion is generated. `None` keeps the type converted.
+    #[must_use]
+    pub fn unchanged_at(mut self, owner_path: Option<&'static str>) -> Self {
+        self.owner_path = owner_path;
+        self
+    }
+
     pub(crate) fn name(&self) -> &'static str {
         self.name
+    }
+
+    pub(crate) fn owner_path(&self) -> Option<&'static str> {
+        self.owner_path
     }
 
     pub(crate) fn docs(&self) -> Option<&'static str> {

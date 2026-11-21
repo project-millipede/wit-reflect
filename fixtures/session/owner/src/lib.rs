@@ -3,8 +3,8 @@
 //! The types and operations here are written as a library would write them,
 //! without wire types or conversion code. The derives and `#[export]` markers
 //! are the only additions. [`schema`] declares the contract, and
-//! [`generate`] renders the WIT and the forwarding file that the
-//! `session-component` fixture includes.
+//! [`generate`] renders the WIT, the bindings file and the forwarding file
+//! that the `session-component` fixture includes.
 //!
 //! The [`foreign`] module stands for a dependency crate: its types carry no
 //! derive and hide their fields.
@@ -98,8 +98,8 @@ pub enum Endianness {
 }
 
 /// Numeric evidence with an optional canonical name.
-#[derive(Debug, WitType)]
-#[wit(name = "macho-value")]
+// Public fields, `Clone` and `Debug`: the bindings use this type itself.
+#[derive(Clone, Debug, WitType)]
 pub struct MachoValue {
     pub value: u32,
     pub name: Option<String>,
@@ -196,6 +196,7 @@ impl fmt::Display for AnalysisError {
 
 impl Error for AnalysisError {}
 
+// Not `Clone`, so the bindings cannot use it: it is converted.
 #[derive(Debug, WitType)]
 pub enum FailureKind {
     Transport,
@@ -242,10 +243,19 @@ impl fmt::Display for InspectionFailure {
 
 impl Error for InspectionFailure {}
 
-#[derive(Debug, WitType)]
+// Crosses unchanged, also where a generic carrier holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, WitType)]
 pub enum StepKind {
     QuerySelection,
     Inspect,
+}
+
+/// What the session has done so far.
+// Everything inside crosses unchanged, so this record does too.
+#[derive(Clone, Debug, WitType)]
+pub struct Progress {
+    pub last_step: Option<StepKind>,
+    pub inspections: u64,
 }
 
 /// A step's identity and original result.
@@ -269,6 +279,7 @@ pub type InspectionOutcome = Outcome<InspectionStepOutcome>;
 pub struct Session {
     selection: Option<String>,
     inspections: usize,
+    last_step: Option<StepKind>,
 }
 
 impl Session {
@@ -291,6 +302,7 @@ impl Session {
     #[export]
     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome {
         self.inspections += 1;
+        self.last_step = Some(StepKind::Inspect);
         let result = if self.selection.as_deref() == Some(resource) {
             self.analyze(resource)
         } else {
@@ -305,6 +317,16 @@ impl Session {
                 kind: StepKind::Inspect,
                 result,
             }],
+        }
+    }
+
+    /// The last step and the number of inspections so far.
+    #[export]
+    #[must_use]
+    pub fn progress(&self) -> Progress {
+        Progress {
+            last_step: self.last_step,
+            inspections: u64::try_from(self.inspections).unwrap_or(u64::MAX),
         }
     }
 
@@ -344,8 +366,11 @@ pub fn create_session() -> Session {
     Session {
         selection: None,
         inspections: 0,
+        last_step: None,
     }
 }
+
+const WORLD: &str = "session";
 
 /// The contract: which types and operations each interface exports.
 ///
@@ -368,11 +393,12 @@ pub fn schema() -> Result<Schema, Box<dyn Error>> {
         .resource::<Session>()
         .method(operation!(session_owner::Session::select))
         .method(operation!(session_owner::Session::selection))
-        .method(operation!(session_owner::Session::inspect));
+        .method(operation!(session_owner::Session::inspect))
+        .method(operation!(session_owner::Session::progress));
     native.function(operation!(session_owner::create_session));
 
     schema
-        .world("session")
+        .world(WORLD)
         .export_as("native", "native")
         .export("binary");
     Ok(schema)
@@ -383,6 +409,8 @@ pub fn schema() -> Result<Schema, Box<dyn Error>> {
 pub struct Artifacts {
     /// The WIT package.
     pub wit: String,
+    /// The Rust source setting up the world's bindings.
+    pub bindings: String,
     /// The Rust source implementing the world's exported interfaces.
     pub forwarding: String,
 }
@@ -394,7 +422,7 @@ pub enum GenerationError {
     Declaration(Box<dyn Error>),
     /// The declared schema is not a valid contract.
     Schema(SchemaErrors),
-    /// The contract cannot be forwarded to the Rust operations.
+    /// The component's Rust files cannot be generated from the contract.
     Forwarding(ForwardingErrors),
 }
 
@@ -418,20 +446,24 @@ impl Error for GenerationError {
     }
 }
 
-/// Render both artifacts from [`schema`].
+/// Render the artifacts from [`schema`].
 ///
 /// # Errors
 ///
-/// Returns the schema's or the forwarding's problems; each lists every
-/// problem found.
+/// Returns the schema's problems, or those of the generated Rust files; each
+/// lists every problem found.
 pub fn generate() -> Result<Artifacts, GenerationError> {
     let schema = schema().map_err(GenerationError::Declaration)?;
     let package = schema.resolve().map_err(GenerationError::Schema)?;
+    let bindings = package
+        .bindings(WORLD)
+        .map_err(GenerationError::Forwarding)?;
     let forwarding = package
-        .forwarding("session")
+        .forwarding(WORLD)
         .map_err(GenerationError::Forwarding)?;
     Ok(Artifacts {
         wit: package.to_string(),
+        bindings,
         forwarding,
     })
 }

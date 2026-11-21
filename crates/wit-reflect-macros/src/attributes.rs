@@ -44,6 +44,10 @@ pub(crate) struct ContainerAttributes {
     pub(crate) cases: Option<LitStr>,
     /// The foreign type this declaration describes.
     pub(crate) remote: Option<Path>,
+    /// `convert`: never let the type cross unchanged.
+    pub(crate) convert: Option<Path>,
+    /// `path = …`: where the component crate can name the type.
+    pub(crate) public_path: Option<Path>,
 }
 
 /// A field of the wire record computed from the whole value.
@@ -112,9 +116,21 @@ impl ContainerAttributes {
                 let remote = meta.value()?.parse()?;
                 parsed.remote = Some(remote);
                 Ok(())
+            } else if meta.path.is_ident("convert") {
+                parsed.convert = Some(meta.path.clone());
+                Ok(())
+            } else if meta.path.is_ident("path") {
+                if parsed.public_path.is_some() {
+                    return Err(meta.error("`path` is given more than once"));
+                }
+                let public_path = meta.value()?.parse()?;
+                parsed.public_path = Some(public_path);
+                Ok(())
             } else {
-                Err(meta
-                    .error("expected `name`, `transparent`, `field`, `cases`, `remote` or `crate`"))
+                Err(meta.error(
+                    "expected `name`, `transparent`, `field`, `cases`, `remote`, `convert`, \
+                     `path` or `crate`",
+                ))
             }
         });
         parsed

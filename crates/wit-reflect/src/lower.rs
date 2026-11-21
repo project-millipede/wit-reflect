@@ -10,27 +10,152 @@
 //! Records are a field list `Fields((a, (b, ())))` and enums a nested choice
 //! `Cases(Either::Next(Either::This(payload)))`. Nesting instead of tuples of
 //! every length means neither side has an arity limit.
+//!
+//! # Types that cross unchanged
+//!
+//! Some owner types need no conversion: the bindings can use them as they are,
+//! through wit-bindgen's `with` mapping. Such a value is its own "parts" and is
+//! moved across. A type qualifies only if the bindings can use it and every
+//! type inside it qualifies too. No macro can see into another type, so that
+//! answer is a type, [`Lower::Passage`], which the compiler computes from the
+//! field types.
 
-/// An owner value that can be taken apart into wire parts.
+use std::fmt::Debug;
+use std::marker::PhantomData;
+
+/// An owner value that can be handed to generated bindings.
 ///
 /// Derived together with [`WitType`](crate::WitType), from the same fields and
-/// rules, so the parts always have the shape the generated WIT declares.
+/// rules, so what crosses always has the shape the generated WIT declares.
 pub trait Lower {
-    /// The value's wire parts. They contain no binding types.
+    /// Whether the binding uses this type itself or a type assembled from parts.
+    type Passage: Passage;
+
+    /// What crosses: the value itself when [`Unchanged`], otherwise its wire
+    /// parts. Parts contain no binding types.
     type Parts;
 
-    /// Take the value apart, applying its representation rules.
+    /// Hand the value over, taking it apart by its representation rules unless
+    /// it crosses unchanged.
     fn lower(self) -> Self::Parts;
 }
 
-/// A binding value that can be built from the wire parts `Parts`.
+/// How an owner value reaches the binding: [`Unchanged`] or [`Converted`].
+///
+/// A type crosses unchanged only if everything inside it does. No macro can
+/// see into another type, so the answer is computed by the compiler from the
+/// field types: [`And`](Passage::And) combines two answers, and
+/// [`Crossing`](Passage::Crossing) selects what `lower` returns.
+pub trait Passage: sealed::Sealed {
+    /// Whether the binding uses the owner type itself.
+    const UNCHANGED: bool;
+
+    /// This passage combined with another: unchanged only if both are.
+    type And<Other: Passage>: Passage;
+
+    /// `Whole` when unchanged, `Taken` when converted.
+    type Crossing<Whole, Taken>;
+
+    /// Return `whole` itself, or the parts `take_apart` produces from it.
+    fn cross<Whole, Taken>(
+        whole: Whole,
+        take_apart: impl FnOnce(Whole) -> Taken,
+    ) -> Self::Crossing<Whole, Taken>;
+}
+
+/// Whether generated bindings could use `T` themselves.
+///
+/// They clone and print the values they hold, so `T` must be `Clone` and
+/// `Debug`. The answer is the constant `BY_BINDINGS`. For a type that meets
+/// the bounds it resolves to the inherent constant below; for any other type
+/// only the default of [`NotUsable`] exists. The derive reads it for one
+/// concrete type, where the compiler can tell the two apart.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct Usable<T>(PhantomData<T>);
+
+impl<T: Clone + Debug> Usable<T> {
+    /// The bindings can use the type.
+    pub const BY_BINDINGS: bool = true;
+}
+
+/// The answer for a type that is not `Clone` and `Debug`.
+#[doc(hidden)]
+pub trait NotUsable {
+    /// The bindings cannot use the type.
+    const BY_BINDINGS: bool = false;
+}
+
+impl<T> NotUsable for Usable<T> {}
+
+/// A compile-time answer as a type, so that it can select a passage.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct Is<const ANSWER: bool>;
+
+/// `Is<true>` is [`Unchanged`], `Is<false>` is [`Converted`].
+#[doc(hidden)]
+pub trait Answer {
+    /// The passage the answer selects.
+    type Passage: Passage;
+}
+
+impl Answer for Is<true> {
+    type Passage = Unchanged;
+}
+
+impl Answer for Is<false> {
+    type Passage = Converted;
+}
+
+/// The binding uses the owner type itself; the value is moved across.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unchanged {}
+
+/// The binding has its own type; the value is taken apart and assembled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Converted {}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Unchanged {}
+    impl Sealed for super::Converted {}
+}
+
+impl Passage for Unchanged {
+    const UNCHANGED: bool = true;
+
+    type And<Other: Passage> = Other;
+
+    type Crossing<Whole, Taken> = Whole;
+
+    fn cross<Whole, Taken>(whole: Whole, _take_apart: impl FnOnce(Whole) -> Taken) -> Whole {
+        whole
+    }
+}
+
+impl Passage for Converted {
+    const UNCHANGED: bool = false;
+
+    type And<Other: Passage> = Converted;
+
+    type Crossing<Whole, Taken> = Taken;
+
+    fn cross<Whole, Taken>(whole: Whole, take_apart: impl FnOnce(Whole) -> Taken) -> Taken {
+        take_apart(whole)
+    }
+}
+
+/// A binding value that can be built from what an owner value hands over.
 ///
 /// Derived on generated bindings through wit-bindgen's `additional_derives`.
+/// An owner type that crosses unchanged is built from itself.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be assembled from the wire parts `{Parts}`",
     label = "the binding type and the owner type disagree here",
-    note = "they differ in field order, count or type; regenerate the WIT and forwarding file \
-            from the schema, then rebuild"
+    note = "they differ in field order, count or type, or the bindings define a type of their \
+            own where the owner type crosses unchanged; regenerate the WIT, bindings and \
+            forwarding files from the schema, then rebuild"
 )]
 pub trait FromParts<Parts>: Sized {
     /// Build the value from parts in declaration order.
@@ -76,6 +201,7 @@ macro_rules! leaf {
     ($($ty:ty),* $(,)?) => {
         $(
             impl Lower for $ty {
+                type Passage = Unchanged;
                 type Parts = $ty;
 
                 fn lower(self) -> $ty {
@@ -110,11 +236,14 @@ leaf!(
     ()
 );
 
+// A container crosses as its content does. Unchanged content is returned as it
+// is, without visiting the elements.
 impl<T: Lower> Lower for Vec<T> {
-    type Parts = Vec<T::Parts>;
+    type Passage = T::Passage;
+    type Parts = <T::Passage as Passage>::Crossing<Vec<T>, Vec<T::Parts>>;
 
     fn lower(self) -> Self::Parts {
-        self.into_iter().map(Lower::lower).collect()
+        <T::Passage as Passage>::cross(self, |list| list.into_iter().map(Lower::lower).collect())
     }
 }
 
@@ -125,10 +254,11 @@ impl<Parts, Binding: FromParts<Parts>> FromParts<Vec<Parts>> for Vec<Binding> {
 }
 
 impl<T: Lower> Lower for Option<T> {
-    type Parts = Option<T::Parts>;
+    type Passage = T::Passage;
+    type Parts = <T::Passage as Passage>::Crossing<Option<T>, Option<T::Parts>>;
 
     fn lower(self) -> Self::Parts {
-        self.map(Lower::lower)
+        <T::Passage as Passage>::cross(self, |value| value.map(Lower::lower))
     }
 }
 
@@ -139,10 +269,13 @@ impl<Parts, Binding: FromParts<Parts>> FromParts<Option<Parts>> for Option<Bindi
 }
 
 impl<T: Lower, E: Lower> Lower for Result<T, E> {
-    type Parts = Result<T::Parts, E::Parts>;
+    type Passage = <T::Passage as Passage>::And<E::Passage>;
+    type Parts = <Self::Passage as Passage>::Crossing<Result<T, E>, Result<T::Parts, E::Parts>>;
 
     fn lower(self) -> Self::Parts {
-        self.map(Lower::lower).map_err(Lower::lower)
+        <Self::Passage as Passage>::cross(self, |result| {
+            result.map(Lower::lower).map_err(Lower::lower)
+        })
     }
 }
 
@@ -156,8 +289,10 @@ where
     }
 }
 
-/// Owned indirection does not change the value's parts.
+/// Owned indirection does not change the value's parts. The binding holds the
+/// content without the box, so a box itself never crosses unchanged.
 impl<T: Lower> Lower for Box<T> {
+    type Passage = Converted;
     type Parts = T::Parts;
 
     fn lower(self) -> Self::Parts {
@@ -166,15 +301,27 @@ impl<T: Lower> Lower for Box<T> {
     }
 }
 
+/// The combined passage of several types: unchanged only if every one is.
+macro_rules! every_passage {
+    () => { Unchanged };
+    ($first:ident $(, $rest:ident)*) => {
+        <<$first as Lower>::Passage as Passage>::And<every_passage!($($rest),*)>
+    };
+}
+
 macro_rules! tuple {
     ($(($element:ident, $parts:ident, $binding:ident)),+) => {
         impl<$($element: Lower),+> Lower for ($($element,)+) {
-            type Parts = ($($element::Parts,)+);
+            type Passage = every_passage!($($element),+);
+            type Parts =
+                <Self::Passage as Passage>::Crossing<Self, ($($element::Parts,)+)>;
 
             fn lower(self) -> Self::Parts {
-                #[allow(non_snake_case, reason = "bindings are named after their type parameters")]
-                let ($($element,)+) = self;
-                ($($element.lower(),)+)
+                <Self::Passage as Passage>::cross(self, |tuple| {
+                    #[allow(non_snake_case, reason = "bindings are named after their type parameters")]
+                    let ($($element,)+) = tuple;
+                    ($($element.lower(),)+)
+                })
             }
         }
 

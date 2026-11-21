@@ -27,4 +27,9 @@ impl crate::exports::native::GuestSession for ::wit_reflect::component::Resource
         let returned = session_owner::Session::inspect(&mut self.borrow_mut(), &resource);
         ::wit_reflect::lower::assemble(returned)
     }
+
+    fn progress(&self) -> session_owner::Progress {
+        let returned = session_owner::Session::progress(&self.borrow());
+        ::wit_reflect::lower::assemble(returned)
+    }
 }

@@ -1,6 +1,6 @@
 //! Write or check the generated artifacts of the session fixture.
 //!
-//! - `generate` rewrites the committed WIT and forwarding file.
+//! - `generate` rewrites the committed WIT, bindings file and forwarding file.
 //! - `generate --check` changes nothing and fails if a committed file differs
 //!   from what the schema generates.
 //!
@@ -48,10 +48,15 @@ fn parse_arguments() -> Result<bool, String> {
 
 /// Returns whether every artifact is current after the run.
 fn run(check_only: bool) -> Result<bool, Box<dyn Error>> {
-    let Artifacts { wit, forwarding } = session_owner::generate()?;
+    let Artifacts {
+        wit,
+        bindings,
+        forwarding,
+    } = session_owner::generate()?;
     let component_directory = Path::new(COMPONENT_DIRECTORY);
     let generated_files = [
         (component_directory.join("wit/session.wit"), wit),
+        (component_directory.join("src/bindings.rs"), bindings),
         (component_directory.join("src/forwarding.rs"), forwarding),
     ];
 

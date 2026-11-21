@@ -67,6 +67,15 @@ impl PackageName {
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
+
+    /// The identity of one of the package's interfaces or worlds:
+    /// `namespace:package/item`, followed by `@version` when versioned.
+    pub(crate) fn item_id(&self, item: &str) -> String {
+        match &self.version {
+            Some(version) => format!("{}:{}/{item}@{version}", self.namespace, self.name),
+            None => format!("{}:{}/{item}", self.namespace, self.name),
+        }
+    }
 }
 
 impl fmt::Display for PackageName {

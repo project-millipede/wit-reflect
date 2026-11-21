@@ -6,8 +6,11 @@
 //!
 //! A trait implementation must spell out its signatures, so this module
 //! reproduces wit-bindgen's naming of modules, traits, types, functions and
-//! parameters. All of that knowledge lives here. It follows wit-bindgen 0.60;
+//! parameters. All of that knowledge lives here. It follows wit-bindgen 0.63;
 //! a difference in another version is a compile error in the component crate.
+//!
+//! A type that crosses unchanged is named by its owner path, because the
+//! bindings file maps its WIT type to the owner type itself.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -96,13 +99,23 @@ pub enum ForwardingError {
     },
 }
 
-/// Every problem found while generating a forwarding file. Never empty.
+/// Every problem found while generating a component's Rust files. Never empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForwardingErrors {
     errors: Vec<ForwardingError>,
 }
 
 impl ForwardingErrors {
+    /// The single problem that the schema declares no world named `world`.
+    pub(crate) fn unknown_world(world: &str) -> Self {
+        let unknown_world = ForwardingError::UnknownWorld {
+            world: world.to_owned(),
+        };
+        Self {
+            errors: vec![unknown_world],
+        }
+    }
+
     fn check(errors: Vec<ForwardingError>) -> Result<(), Self> {
         if errors.is_empty() {
             Ok(())
@@ -138,7 +151,7 @@ impl<'errors> IntoIterator for &'errors ForwardingErrors {
 /// One line per problem, so a generator's output lists them all.
 impl fmt::Display for ForwardingErrors {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "the forwarding file cannot be generated:")?;
+        write!(formatter, "the component's Rust files cannot be generated:")?;
         for error in &self.errors {
             write!(formatter, "\n- {error}")?;
         }
@@ -151,15 +164,12 @@ impl std::error::Error for ForwardingErrors {}
 impl ResolvedPackage {
     /// Render the Rust source that implements the interfaces `world` exports.
     ///
-    /// The component crate includes the result as a module next to its
-    /// bindings:
+    /// The component crate includes the result as a module next to the
+    /// bindings that [`bindings`](Self::bindings) sets up:
     ///
     /// ```text
-    /// wit_bindgen::generate!({
-    ///     path: "wit",
-    ///     world: "example:session/session",
-    ///     additional_derives: [wit_reflect::FromParts],
-    /// });
+    /// include!("bindings.rs");
+    /// generate_bindings! { path: "wit" }
     ///
     /// #[rustfmt::skip]
     /// mod forwarding;
@@ -172,7 +182,7 @@ impl ResolvedPackage {
     /// for every exported interface of this package that has functions, and
     /// registers each resource as a
     /// [`ResourceCell`](crate::component::ResourceCell) of its Rust type. It
-    /// expects the bindings at the crate root and follows wit-bindgen 0.60.
+    /// expects the bindings at the crate root and follows wit-bindgen 0.63.
     ///
     /// # Errors
     ///
@@ -181,20 +191,15 @@ impl ResolvedPackage {
     /// that is not absolute, and a resource whose Rust type cannot be
     /// determined.
     pub fn forwarding(&self, world: &str) -> Result<String, ForwardingErrors> {
-        let Some(exported_world) = self.worlds.iter().find(|declared| declared.name == world)
-        else {
-            let unknown_world = ForwardingError::UnknownWorld {
-                world: world.to_owned(),
-            };
-            return Err(ForwardingErrors {
-                errors: vec![unknown_world],
-            });
+        let Some(exported_world) = self.world(world) else {
+            return Err(ForwardingErrors::unknown_world(world));
         };
 
         let mut errors = Vec::new();
         let resource_types = resource_types(&self.interfaces, &mut errors);
         let mut renderer = Renderer {
             type_names: &self.type_names,
+            owner_paths: self.owner_paths(),
             resource_types,
             errors,
             text: String::new(),
@@ -311,6 +316,8 @@ fn rust_type_name(name: &str) -> String {
 
 struct Renderer<'package> {
     type_names: &'package HashMap<TypeKey, String>,
+    /// The owner path of every type the bindings use unchanged.
+    owner_paths: HashMap<TypeKey, &'static str>,
     resource_types: HashMap<TypeKey, String>,
     errors: Vec<ForwardingError>,
     text: String,
@@ -587,6 +594,10 @@ impl Renderer<'_> {
                     [only_type] => format!("({only_type},)"),
                     _ => format!("({})", element_types.join(", ")),
                 }
+            }
+            // The bindings use an unchanged type itself, under its own path.
+            Type::Named(key) if self.owner_paths.contains_key(key) => {
+                self.owner_paths[key].to_owned()
             }
             Type::Named(key) | Type::Own(key) => {
                 format!("{module}::{}", rust_type_name(&self.type_name(*key)))

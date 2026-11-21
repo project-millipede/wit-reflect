@@ -96,6 +96,14 @@ interface native {
     selection: func() -> option<string>;
     /// Inspect `resource`. It must be the current selection.
     inspect: func(%resource: string) -> inspection-outcome;
+    /// The last step and the number of inspections so far.
+    progress: func() -> progress;
+  }
+
+  /// What the session has done so far.
+  record progress {
+    last-step: option<step-kind>,
+    inspections: u64,
   }
 
   /// Create a session without a selection.

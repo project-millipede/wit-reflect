@@ -55,6 +55,9 @@ pub(crate) struct Definition {
     pub(crate) key: Option<TypeKey>,
     pub(crate) name: String,
     pub(crate) docs: Option<&'static str>,
+    /// Where a component crate names the owner type, when the binding uses
+    /// that type itself instead of defining its own.
+    pub(crate) owner_path: Option<&'static str>,
     pub(crate) body: Body,
 }
 
@@ -135,6 +138,21 @@ pub(crate) struct ResolvedWorldItem {
     pub(crate) target: String,
     /// Position of the interface when it belongs to this package.
     pub(crate) interface: Option<usize>,
+}
+
+impl ResolvedPackage {
+    pub(crate) fn world(&self, name: &str) -> Option<&World> {
+        self.worlds.iter().find(|declared| declared.name == name)
+    }
+
+    /// The owner path of every type that generated bindings use unchanged.
+    pub(crate) fn owner_paths(&self) -> HashMap<TypeKey, &'static str> {
+        self.interfaces
+            .iter()
+            .flat_map(|interface| &interface.definitions)
+            .filter_map(|definition| Some((definition.key?, definition.owner_path?)))
+            .collect()
+    }
 }
 
 pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> {
@@ -1029,6 +1047,7 @@ impl InterfaceScope<'_, '_> {
             key: Some(key),
             name: name.to_owned(),
             docs: definition.docs(),
+            owner_path: definition.owner_path(),
             body,
         });
     }
@@ -1078,6 +1097,7 @@ impl InterfaceScope<'_, '_> {
             key: None,
             name: cases_name.clone(),
             docs: None,
+            owner_path: None,
             body,
         });
         cases_name
@@ -1114,6 +1134,7 @@ impl InterfaceScope<'_, '_> {
                     key: None,
                     name: payload_name,
                     docs: None,
+                    owner_path: None,
                     body: Body::Record(resolved_fields),
                 });
                 Some(payload_reference)
