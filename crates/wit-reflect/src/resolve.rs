@@ -28,6 +28,8 @@ pub struct ResolvedPackage {
     pub(crate) name: PackageName,
     pub(crate) interfaces: Vec<Interface>,
     pub(crate) worlds: Vec<World>,
+    /// The resolved WIT name of every named type. Used for lookup only.
+    pub(crate) type_names: HashMap<TypeKey, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +50,9 @@ pub(crate) struct Use {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Definition {
+    /// The Rust type this definition was reflected from. `None` for a payload
+    /// record or the cases of a record, which resolution derives.
+    pub(crate) key: Option<TypeKey>,
     pub(crate) name: String,
     pub(crate) docs: Option<&'static str>,
     pub(crate) body: Body,
@@ -86,12 +91,21 @@ pub(crate) struct ResolvedFunction {
     pub(crate) params: Vec<ResolvedParam>,
     /// The result type as WIT source text. `None` when nothing is returned.
     pub(crate) result: Option<String>,
+    /// The reflected result type, for generated forwarding code.
+    pub(crate) result_type: Type,
+    /// The path that names the Rust function in generated forwarding code.
+    pub(crate) rust_path: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FunctionKind {
-    /// A function of an interface, or a method of a resource.
-    Function,
+    /// A function of an interface.
+    Free,
+    /// A function called on a borrowed resource.
+    Method {
+        /// Whether the Rust method takes `&mut self`.
+        exclusive: bool,
+    },
     Static,
     Constructor,
 }
@@ -101,6 +115,10 @@ pub(crate) struct ResolvedParam {
     pub(crate) name: &'static str,
     /// The type as WIT source text.
     pub(crate) ty: String,
+    /// The reflected type, for generated forwarding code.
+    pub(crate) reflected: Type,
+    /// Whether the Rust function takes the argument behind a reference.
+    pub(crate) by_reference: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,6 +133,8 @@ pub(crate) struct ResolvedWorldItem {
     pub(crate) label: Option<String>,
     /// The imported or exported interface as WIT source text.
     pub(crate) target: String,
+    /// Position of the interface when it belongs to this package.
+    pub(crate) interface: Option<usize>,
 }
 
 pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> {
@@ -156,6 +176,7 @@ pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> 
         name: schema.package().clone(),
         interfaces,
         worlds,
+        type_names: names.type_names(),
     })
 }
 
@@ -221,7 +242,8 @@ fn check_operations(
     errors: &mut Vec<SchemaError>,
 ) {
     for declaration in declarations {
-        for function in &declaration.functions {
+        for declared in &declaration.functions {
+            let function = &declared.function;
             let function_label = format!(
                 "function `{}` of interface `{}`",
                 function.name, declaration.name
@@ -604,8 +626,8 @@ fn interface_roots(declaration: &InterfaceDeclaration) -> Vec<TypeKey> {
             collect_function_references(&method.function, &mut roots);
         }
     }
-    for function in &declaration.functions {
-        collect_function_references(function, &mut roots);
+    for declared in &declaration.functions {
+        collect_function_references(&declared.function, &mut roots);
     }
     roots
 }
@@ -719,10 +741,14 @@ fn resolve_worlds(
                     item: item_name.clone(),
                 });
             }
+            let interface = declarations
+                .iter()
+                .position(|declaration| declaration.name == item.target);
             items.push(ResolvedWorldItem {
                 direction: item.direction,
                 label: item.label.clone(),
                 target,
+                interface,
             });
         }
         resolved_worlds.push(World {
@@ -759,13 +785,20 @@ impl<'schema> Names<'schema> {
         expression.to_string()
     }
 
-    fn function(&self, function: &Function, kind: FunctionKind) -> ResolvedFunction {
+    fn function(
+        &self,
+        function: &Function,
+        kind: FunctionKind,
+        rust_path: &'static str,
+    ) -> ResolvedFunction {
         let params = function
             .params
             .iter()
             .map(|param| ResolvedParam {
                 name: param.name,
                 ty: self.expression(&param.ty),
+                reflected: param.ty.clone(),
+                by_reference: param.by_reference,
             })
             .collect();
         let result = if function.result.is_unit() {
@@ -779,7 +812,18 @@ impl<'schema> Names<'schema> {
             kind,
             params,
             result,
+            result_type: function.result.clone(),
+            rust_path,
         }
+    }
+
+    /// The name of every type that has an owning interface.
+    fn type_names(&self) -> HashMap<TypeKey, String> {
+        self.placement
+            .owners
+            .keys()
+            .map(|key| (*key, self.name_of(*key).to_owned()))
+            .collect()
     }
 }
 
@@ -901,10 +945,13 @@ impl InterfaceScope<'_, '_> {
         let uses = self.import(position, declarations, externals);
 
         let mut functions = Vec::with_capacity(declaration.functions.len());
-        for function in &declaration.functions {
+        for declared in &declaration.functions {
+            let function = &declared.function;
             self.namespace
                 .claim(function.name, format!("the function `{}`", function.name));
-            let resolved_function = self.names.function(function, FunctionKind::Function);
+            let resolved_function =
+                self.names
+                    .function(function, FunctionKind::Free, declared.rust_path);
             functions.push(resolved_function);
         }
 
@@ -967,17 +1014,19 @@ impl InterfaceScope<'_, '_> {
                     .iter()
                     .map(|method| {
                         let kind = match method.kind {
-                            MethodKind::Method => FunctionKind::Function,
+                            MethodKind::Method { exclusive } => FunctionKind::Method { exclusive },
                             MethodKind::Static => FunctionKind::Static,
                             MethodKind::Constructor => FunctionKind::Constructor,
                         };
-                        self.names.function(&method.function, kind)
+                        self.names
+                            .function(&method.function, kind, method.rust_path)
                     })
                     .collect();
                 Body::Resource(resolved_functions)
             }
         };
         self.definitions.push(Definition {
+            key: Some(key),
             name: name.to_owned(),
             docs: definition.docs(),
             body,
@@ -1026,6 +1075,7 @@ impl InterfaceScope<'_, '_> {
             Body::Enum(resolved_cases)
         };
         self.definitions.push(Definition {
+            key: None,
             name: cases_name.clone(),
             docs: None,
             body,
@@ -1061,6 +1111,7 @@ impl InterfaceScope<'_, '_> {
                 let payload_reference = Escaped(&payload_name).to_string();
                 let resolved_fields = resolve_fields(fields, self.names);
                 self.definitions.push(Definition {
+                    key: None,
                     name: payload_name,
                     docs: None,
                     body: Body::Record(resolved_fields),

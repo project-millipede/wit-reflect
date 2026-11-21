@@ -9,6 +9,7 @@
 mod attributes;
 mod derive;
 mod export;
+mod from_parts;
 mod names;
 mod operation;
 mod resource;
@@ -37,6 +38,14 @@ pub fn derive_wit_resource(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(error) => error.into_compile_error().into(),
     }
+}
+
+/// Derives `wit_reflect::lower::FromParts` for a generated binding type. See
+/// the re-export in `wit-reflect`.
+#[proc_macro_derive(FromParts)]
+pub fn derive_from_parts(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    from_parts::expand(&input).into()
 }
 
 /// Makes a function's signature available to a schema. See the re-export in

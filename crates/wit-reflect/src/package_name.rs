@@ -59,6 +59,16 @@ impl FromStr for PackageName {
     }
 }
 
+impl PackageName {
+    pub(crate) fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 impl fmt::Display for PackageName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}:{}", self.namespace, self.name)?;

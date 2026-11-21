@@ -1,0 +1,108 @@
+package example:session@0.1.0;
+
+interface binary {
+  enum endianness {
+    little,
+    big,
+  }
+
+  /// Numeric evidence with an optional canonical name.
+  record macho-value {
+    value: u32,
+    name: option<string>,
+  }
+
+  /// An input-file range.
+  record file-range {
+    offset: u64,
+    size: u64,
+  }
+
+  record image {
+    endianness: endianness,
+    file-type: macho-value,
+    cpu-subtype: macho-value,
+    minimum-os: string,
+    file-range: file-range,
+    read-count: u64,
+  }
+
+  record report {
+    byte-length: u64,
+    images: list<image>,
+  }
+
+  record truncated-range {
+    requested-size: u64,
+    available-size: u64,
+  }
+
+  variant error-kind {
+    truncated(truncated-range),
+    unsupported-image,
+    decode(string),
+  }
+
+  record analysis-error {
+    message: string,
+    kind: error-kind,
+  }
+}
+
+interface native {
+  use binary.{analysis-error, report};
+
+  enum step-kind {
+    query-selection,
+    inspect,
+  }
+
+  enum failure-kind {
+    transport,
+    provider,
+  }
+
+  record failure {
+    message: string,
+    kind: failure-kind,
+  }
+
+  variant inspection-failure-kind {
+    selection(failure),
+    analysis(analysis-error),
+  }
+
+  record inspection-failure {
+    message: string,
+    kind: inspection-failure-kind,
+  }
+
+  /// A step's identity and original result.
+  record inspection-step-outcome {
+    kind: step-kind,
+    %result: result<report, inspection-failure>,
+  }
+
+  /// Completed steps in execution order.
+  record inspection-outcome {
+    steps: list<inspection-step-outcome>,
+  }
+
+  /// A client that remembers the selected resource between calls.
+  resource session {
+    /// Remember `resource` as the current selection.
+    select: func(%resource: string);
+    /// The current selection, if any.
+    selection: func() -> option<string>;
+    /// Inspect `resource`. It must be the current selection.
+    inspect: func(%resource: string) -> inspection-outcome;
+  }
+
+  /// Create a session without a selection.
+  create-session: func() -> own<session>;
+}
+
+world session {
+  export native: native;
+  export binary;
+}

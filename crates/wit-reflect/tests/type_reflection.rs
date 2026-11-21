@@ -8,7 +8,7 @@
 
 use std::error::Error;
 
-use wit_reflect::{PackageName, Schema, SchemaError, WitType};
+use wit_reflect::{Field, PackageName, Schema, SchemaError, Type, TypeDef, TypeGraph, WitType};
 
 /// Completed steps in execution order.
 #[derive(WitType)]
@@ -266,9 +266,19 @@ fn undeclared_type_shared_by_two_interfaces_is_rejected() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[derive(WitType)]
 struct Directory {
     children: Vec<Directory>,
+}
+
+// The derive rejects a type that contains itself at compile time. A handwritten
+// implementation can still describe one, so reflection must cope with it.
+impl WitType for Directory {
+    fn wit_type(graph: &mut TypeGraph) -> Type {
+        graph.define::<Self>(|graph| {
+            let children = <Vec<Directory> as WitType>::wit_type(graph);
+            TypeDef::record("directory", vec![Field::new("children", children)])
+        })
+    }
 }
 
 /// A self-containing type has no WIT representation. Reflection must finish

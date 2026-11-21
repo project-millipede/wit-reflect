@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/wit-reflect", "crates/wit-reflect-macros"]
+members = [
+    "crates/wit-reflect",
+    "crates/wit-reflect-macros",
+    "fixtures/session/owner",
+    "fixtures/session/component",
+]
 resolver = "3"
 
 [workspace.package]
@@ -19,6 +24,7 @@ semver = "1"
 syn = { version = "3", features = ["full"] }
 thiserror = "2"
 wit-parser = "0.261"
+wit-reflect = { path = "crates/wit-reflect" }
 wit-reflect-macros = { path = "crates/wit-reflect-macros" }
 
 [workspace.lints.rust]

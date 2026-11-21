@@ -94,7 +94,7 @@ struct Image {
     #[wit(into = MachoValue)]
     file_type: foreign::FileType,
     // The subtype's name depends on the sibling file type.
-    #[wit(with = Image::subtype_value)]
+    #[wit(into = MachoValue, with = Image::subtype_value)]
     cpu_subtype: foreign::CpuSubtype,
     #[wit(display)]
     minimum_os: foreign::Version,
@@ -139,7 +139,7 @@ enum ErrorKind {
 }
 
 #[derive(WitType)]
-#[wit(field(name = "message", with = ToString::to_string))]
+#[wit(field(name = "message", into = String, with = ToString::to_string))]
 struct AnalysisError {
     kind: ErrorKind,
 }
@@ -157,7 +157,7 @@ enum FailureKind {
 }
 
 #[derive(WitType)]
-#[wit(field(name = "message", with = ToString::to_string))]
+#[wit(field(name = "message", into = String, with = ToString::to_string))]
 struct Failure {
     kind: FailureKind,
     #[wit(skip)]
@@ -174,7 +174,10 @@ impl fmt::Display for Failure {
 
 // An enum with a computed field is a record that holds its cases.
 #[derive(WitType)]
-#[wit(field(name = "message", with = ToString::to_string), cases = "kind")]
+#[wit(
+    field(name = "message", into = String, with = ToString::to_string),
+    cases = "kind"
+)]
 enum InspectionFailure {
     Selection(Failure),
     Analysis(AnalysisError),

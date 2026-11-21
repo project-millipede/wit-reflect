@@ -4,7 +4,7 @@ use std::any::type_name;
 use std::marker::PhantomData;
 
 use crate::error::SchemaErrors;
-use crate::function::{Function, Method, MethodKind};
+use crate::function::{Function, Method, MethodKind, Operation};
 use crate::graph::TypeGraph;
 use crate::package_name::PackageName;
 use crate::reflect::{Resource, WitType};
@@ -32,7 +32,15 @@ pub struct Schema {
 pub(crate) struct InterfaceDeclaration {
     pub(crate) name: String,
     pub(crate) declared: Vec<DeclaredType>,
-    pub(crate) functions: Vec<Function>,
+    pub(crate) functions: Vec<DeclaredFunction>,
+}
+
+/// One `function` call: a free function of an interface.
+#[derive(Debug)]
+pub(crate) struct DeclaredFunction {
+    pub(crate) function: Function,
+    /// The path that names the Rust function in generated forwarding code.
+    pub(crate) rust_path: &'static str,
 }
 
 /// An interface of another WIT package, such as a pinned dependency.
@@ -58,6 +66,8 @@ pub(crate) struct DeclaredType {
 pub(crate) struct DeclaredMethod {
     pub(crate) kind: MethodKind,
     pub(crate) function: Function,
+    /// The path that names the Rust function in generated forwarding code.
+    pub(crate) rust_path: &'static str,
 }
 
 #[derive(Debug)]
@@ -275,9 +285,12 @@ impl InterfaceBuilder<'_> {
     /// ```
     ///
     /// Functions are rendered after the interface's types, in this order.
-    pub fn function(&mut self, reflect: impl FnOnce(&mut TypeGraph) -> Function) -> &mut Self {
-        let function = reflect(self.graph);
-        self.interface.functions.push(function);
+    pub fn function(&mut self, operation: Operation<Function>) -> &mut Self {
+        let function = (operation.reflect)(self.graph);
+        self.interface.functions.push(DeclaredFunction {
+            function,
+            rust_path: operation.rust_path,
+        });
         self
     }
 
@@ -323,11 +336,12 @@ impl<R: Resource> ResourceBuilder<'_, R> {
     ///
     /// Only functions declared in an `impl` block of `R` are accepted.
     /// Functions are rendered in this order.
-    pub fn method(&mut self, reflect: impl FnOnce(&mut TypeGraph) -> Method<R>) -> &mut Self {
-        let method = reflect(self.graph);
+    pub fn method(&mut self, operation: Operation<Method<R>>) -> &mut Self {
+        let method = (operation.reflect)(self.graph);
         self.resource.methods.push(DeclaredMethod {
             kind: method.kind,
             function: method.function,
+            rust_path: operation.rust_path,
         });
         self
     }

@@ -5,7 +5,7 @@ use quote::quote;
 use syn::DeriveInput;
 
 use crate::attributes::{ContainerAttributes, Errors};
-use crate::derive::bounded_generics;
+use crate::derive::{reject_lifetimes, with_bounds};
 use crate::names::{kebab_name, runtime_path, with_docs};
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
@@ -18,7 +18,8 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let runtime = runtime_path(container.crate_path.as_ref());
     // No field is reflected, but the type itself must be `'static`.
     let static_bound = quote! { 'static };
-    let generics = bounded_generics(&input.generics, &static_bound, &mut errors);
+    reject_lifetimes(&input.generics, &mut errors);
+    let generics = with_bounds(&input.generics, &static_bound);
     errors.finish()?;
 
     let ident = &input.ident;

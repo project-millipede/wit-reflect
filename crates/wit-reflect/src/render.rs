@@ -122,7 +122,9 @@ fn write_function(
 
     let name = Escaped(function.name);
     match function.kind {
-        FunctionKind::Function => write!(formatter, "{indent}{name}: func(")?,
+        FunctionKind::Free | FunctionKind::Method { .. } => {
+            write!(formatter, "{indent}{name}: func(")?;
+        }
         FunctionKind::Static => write!(formatter, "{indent}{name}: static func(")?,
         // A constructor has no name and always returns its resource.
         FunctionKind::Constructor => write!(formatter, "{indent}constructor(")?,

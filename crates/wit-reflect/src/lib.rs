@@ -133,7 +133,7 @@
 //! use wit_reflect::{Schema, WitType};
 //!
 //! #[derive(WitType)]
-//! #[wit(field(name = "message", with = ToString::to_string))]
+//! #[wit(field(name = "message", into = String, with = ToString::to_string))]
 //! struct ReadFailure {
 //!     #[wit(widen)]
 //!     requested: usize,
@@ -170,9 +170,34 @@
 //! # }
 //! ```
 //!
-//! The rules are listed with the `WitType` derive. In this
-//! version a rule determines the generated WIT only; the conversion it
-//! describes is generated in a later phase.
+//! The rules are listed with the `WitType` derive.
+//!
+//! # Building a component
+//!
+//! The derive also implements [`lower::Lower`], which takes a value apart
+//! with its rules applied. From the same schema that renders the WIT,
+//! [`ResolvedPackage::forwarding`] renders a Rust file that implements the
+//! traits wit-bindgen generates, by calling the listed operations and
+//! assembling their results. A component crate then holds no handwritten
+//! boundary code:
+//!
+//! ```text
+//! wit_bindgen::generate!({
+//!     path: "wit",
+//!     world: "example:session/session",
+//!     additional_derives: [wit_reflect::FromParts],
+//! });
+//!
+//! #[rustfmt::skip]
+//! mod forwarding;
+//! use forwarding::Component;
+//!
+//! export!(Component);
+//! ```
+//!
+//! The WIT and the forwarding file are generated artifacts. Commit them, and
+//! keep a check that fails when they differ from what the schema generates;
+//! the `fixtures/session` crates in the repository show the arrangement.
 //!
 //! # Keeping ordinary builds independent
 //!
@@ -187,15 +212,19 @@
 //!
 //! # Current scope
 //!
-//! This crate generates the WIT contract: types, functions, resources and
-//! worlds, including the wire shapes that representation rules declare. The
-//! generated adapters that connect the contract to the Rust implementation
-//! are later phases; see `docs/phases.md` in the repository.
+//! This crate generates the WIT contract and the code that connects it to the
+//! Rust implementation, for wit-bindgen 0.60. Parameters are limited to plain
+//! values and borrowed resources, and operations are synchronous. Applying it
+//! to a production component is the remaining phase; see `docs/phases.md` in
+//! the repository.
 
+pub mod component;
 mod error;
+mod forwarding;
 mod function;
 mod graph;
 mod identifier;
+pub mod lower;
 mod package_name;
 mod reflect;
 mod render;
@@ -205,7 +234,8 @@ mod schema;
 mod types;
 
 pub use error::{SchemaError, SchemaErrors};
-pub use function::{Function, Method, Param};
+pub use forwarding::{ForwardingError, ForwardingErrors};
+pub use function::{Function, Method, Operation, Param};
 pub use graph::TypeGraph;
 pub use identifier::IdentifierError;
 pub use package_name::{PackageName, PackageNameError};
@@ -249,18 +279,24 @@ pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 /// | `#[wit(display)]` | `string` | the field is `Display` |
 /// | `#[wit(widen)]` | `u64` for `usize`, `s64` for `isize` | see [`rule::Widen`] |
 /// | `#[wit(into = W)]` | `W`'s representation | `W: From<FieldType>` |
-/// | `#[wit(with = function)]` | the function's return type | `function: fn(&Self) -> W` |
+/// | `#[wit(into = W, with = function)]` | `W`'s representation | `function: fn(&Self) -> W` |
 /// | `#[wit(skip)]` | none; the field is not exported | a named field |
 ///
-/// `with` receives the whole value, so the result may depend on other fields.
-/// It applies to struct fields. `display`, `widen` and `into` also apply to
-/// the payload of an enum case and to a transparent struct's field.
+/// `with` replaces the conversion of an `into` rule. Its function receives
+/// the whole value, so the result may depend on other fields. It applies to
+/// struct fields. `display`, `widen` and plain `into` also apply to the
+/// payload of an enum case and to a transparent struct's field.
+///
+/// The derive implements [`lower::Lower`] from the same rules, so a value is
+/// converted exactly as its WIT declares. A type parameter must therefore
+/// implement both `WitType` and `Lower`. A type that contains itself is
+/// rejected: WIT types cannot be recursive.
 ///
 /// # Computed fields
 ///
-/// `#[wit(field(name = "…", with = function))]` on the item adds a leading
-/// field computed from the whole value, for example
-/// `with = ToString::to_string` for a `Display` message.
+/// `#[wit(field(name = "…", into = W, with = function))]` on the item adds a
+/// leading field of wire type `W` computed from the whole value, for example
+/// `into = String, with = ToString::to_string` for a `Display` message.
 ///
 /// A WIT variant cannot hold a field next to its cases. An enum with computed
 /// fields is therefore exported as a record, and `#[wit(cases = "…")]` names
@@ -335,3 +371,22 @@ pub use wit_reflect_macros::export;
 /// ```
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::operation;
+
+/// Derives [`lower::FromParts`] for a binding type generated by wit-bindgen.
+///
+/// It is not written by hand. Name it in the component crate's bindings so
+/// that every generated record, variant and enum can be assembled from the
+/// wire parts of an owner value:
+///
+/// ```text
+/// wit_bindgen::generate!({
+///     path: "wit",
+///     world: "example:session/session",
+///     additional_derives: [wit_reflect::FromParts],
+/// });
+/// ```
+///
+/// The expansion refers to this crate as `::wit_reflect`, so the component
+/// crate depends on it under that name.
+#[cfg(feature = "derive")]
+pub use wit_reflect_macros::FromParts;

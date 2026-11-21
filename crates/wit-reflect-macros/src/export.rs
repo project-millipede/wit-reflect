@@ -78,7 +78,10 @@ enum Export {
     /// A function of an interface.
     Free,
     /// Called on a borrowed resource.
-    Method,
+    Method {
+        /// Whether the receiver is `&mut self`.
+        exclusive: bool,
+    },
     Static,
     Constructor,
 }
@@ -103,9 +106,13 @@ pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<
     };
     let (companion_type, companion_value) = match export {
         Export::Free => (quote! { #runtime::Function }, reflected_function),
-        Export::Method => (
+        Export::Method { exclusive: false } => (
             quote! { #runtime::Method<Self> },
             quote! { #runtime::Method::borrowing(#reflected_function) },
+        ),
+        Export::Method { exclusive: true } => (
+            quote! { #runtime::Method<Self> },
+            quote! { #runtime::Method::borrowing_mut(#reflected_function) },
         ),
         Export::Static => (
             quote! { #runtime::Method<Self> },
@@ -164,15 +171,18 @@ fn classify(signature: &Signature, options: &ExportOptions, errors: &mut Errors)
                     "`static` and `constructor` apply only to functions without `self`",
                 );
             }
-            match &receiver.kind {
-                ReceiverKind::Reference(..) => {}
-                _ => errors.report(
-                    receiver,
-                    "an exported method must take `&self` or `&mut self`; \
-                     a WIT method borrows its resource",
-                ),
-            }
-            Export::Method
+            let exclusive = match &receiver.kind {
+                ReceiverKind::Reference(_, _, mutability) => mutability.is_some(),
+                _ => {
+                    errors.report(
+                        receiver,
+                        "an exported method must take `&self` or `&mut self`; \
+                         a WIT method borrows its resource",
+                    );
+                    false
+                }
+            };
+            Export::Method { exclusive }
         }
         (None, Some((Association::Static, _))) => Export::Static,
         (None, Some((Association::Constructor, _))) => Export::Constructor,
@@ -191,7 +201,7 @@ fn reflect_params(signature: &Signature, runtime: &Path, errors: &mut Errors) ->
         let Some(name) = parameter_name(parameter, errors) else {
             continue;
         };
-        let parameter_type = match &*parameter.ty {
+        let param = match &*parameter.ty {
             Type::Reference(reference) => {
                 if let Some(mutability) = &reference.mutability {
                     errors.report(
@@ -202,16 +212,23 @@ fn reflect_params(signature: &Signature, runtime: &Path, errors: &mut Errors) ->
                 // A reference passes data by value and a resource as a borrow.
                 let referent = &reference.elem;
                 quote! {
-                    #runtime::Type::borrowed(<#referent as #runtime::WitType>::wit_type(graph))
+                    #runtime::Param::by_reference(
+                        #name,
+                        #runtime::Type::borrowed(
+                            <#referent as #runtime::WitType>::wit_type(graph),
+                        ),
+                    )
                 }
             }
             Type::ImplTrait(impl_trait) => {
                 errors.report(impl_trait, "an `impl Trait` parameter has no WIT type");
                 continue;
             }
-            owned_type => quote! { <#owned_type as #runtime::WitType>::wit_type(graph) },
+            owned_type => quote! {
+                #runtime::Param::new(#name, <#owned_type as #runtime::WitType>::wit_type(graph))
+            },
         };
-        params.push(quote! { #runtime::Param::new(#name, #parameter_type) });
+        params.push(param);
     }
     params
 }

@@ -103,3 +103,24 @@ compiles no generator code. Features stay additive.
 **Default:** a public item's example is a doctest that asserts its result and
 uses `?` for fallible steps. An example that cannot compile in some feature
 configuration is gated explicitly rather than marked `ignore` everywhere.
+
+## 10. Generated files are checked, never silently repaired
+
+**Rule:** a file generated from source and committed has two commands: one that
+rewrites it and one that fails when it is stale. The check changes nothing.
+
+A check that also repaired would hide that a contract changed. Committing the
+output makes such a change visible in review, and a test that compares the
+committed file with the generator's output keeps the two from drifting.
+
+Example: `cargo run -p session-owner --bin generate` rewrites the fixture's WIT
+and forwarding file; `-- --check` reports stale files and exits with an error.
+
+## 11. One plan, several outputs
+
+**Rule:** when two generated outputs must agree, derive both from one parsed
+representation instead of parsing the input twice.
+
+Example: the `WitType` derive plans an item once and generates the schema
+reflection and the lowering from that plan, so a rule cannot apply to one and
+not the other.

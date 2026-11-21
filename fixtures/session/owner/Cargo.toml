@@ -1,0 +1,13 @@
+[package]
+name = "session-owner"
+description = "Fixture: ordinary Rust types and operations exported through wit-reflect."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+wit-reflect.workspace = true
+
+[lints]
+workspace = true

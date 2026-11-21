@@ -38,7 +38,7 @@ pub(crate) struct ContainerAttributes {
     pub(crate) name: Option<LitStr>,
     pub(crate) transparent: Option<Path>,
     pub(crate) crate_path: Option<Path>,
-    /// `field(name = "…", with = function)`, in declaration order.
+    /// `field(name = "…", into = W, with = function)`, in declaration order.
     pub(crate) computed_fields: Vec<ComputedField>,
     /// The record field that holds an enum's cases when it has computed fields.
     pub(crate) cases: Option<LitStr>,
@@ -49,27 +49,39 @@ pub(crate) struct ContainerAttributes {
 /// A field of the wire record computed from the whole value.
 pub(crate) struct ComputedField {
     pub(crate) name: LitStr,
+    pub(crate) wire_type: Type,
     pub(crate) function: ExprPath,
 }
 
 impl ComputedField {
     fn parse(meta: &ParseNestedMeta<'_>) -> syn::Result<Self> {
         let mut name = None;
+        let mut wire_type = None;
         let mut function = None;
         meta.parse_nested_meta(|entry| {
             if entry.path.is_ident("name") {
                 set_string(&mut name, &entry)
+            } else if entry.path.is_ident("into") {
+                let parsed_type = entry.value()?.parse()?;
+                wire_type = Some(parsed_type);
+                Ok(())
             } else if entry.path.is_ident("with") {
                 let parsed_function = entry.value()?.parse()?;
                 function = Some(parsed_function);
                 Ok(())
             } else {
-                Err(entry.error("expected `name` or `with`"))
+                Err(entry.error("expected `name`, `into` or `with`"))
             }
         })?;
-        match (name, function) {
-            (Some(name), Some(function)) => Ok(Self { name, function }),
-            _ => Err(meta.error("a computed field needs `name = \"…\"` and `with = function`")),
+        match (name, wire_type, function) {
+            (Some(name), Some(wire_type), Some(function)) => Ok(Self {
+                name,
+                wire_type,
+                function,
+            }),
+            _ => Err(meta.error(
+                "a computed field needs `name = \"…\"`, `into = WireType` and `with = function`",
+            )),
         }
     }
 }
@@ -122,16 +134,19 @@ pub(crate) struct DeclaredRule {
     pub(crate) declared_by: Path,
 }
 
-/// How a field's wire type is obtained instead of reflecting its own type.
+/// How a field's wire value is obtained instead of using the field as stored.
 pub(crate) enum FieldRule {
     /// `display`: its `Display` text.
     Display,
     /// `widen`: `usize` or `isize` at a fixed, lossless width.
     Widen,
-    /// `into = W`: `W::from(field)`.
-    Into(Box<Type>),
-    /// `with = function`: `function(&parent)`.
-    With(ExprPath),
+    /// `into = W`: the wire type `W`.
+    Into {
+        wire_type: Box<Type>,
+        /// `with = function`: computed by `function(&parent)` instead of
+        /// `W::from(field)`.
+        function: Option<ExprPath>,
+    },
     /// `skip`: not exported.
     Skip,
 }
@@ -139,10 +154,22 @@ pub(crate) enum FieldRule {
 impl FieldAttributes {
     pub(crate) fn parse(attributes: &[Attribute], errors: &mut Errors) -> Self {
         let mut parsed = Self::default();
+        // `with` modifies `into`, in either order, so it is combined afterwards.
+        let mut with_function: Option<(ExprPath, Path)> = None;
+
         parse_wit_attributes(attributes, errors, |meta| {
             if meta.path.is_ident("name") {
                 return set_string(&mut parsed.name, &meta);
             }
+            if meta.path.is_ident("with") {
+                if with_function.is_some() {
+                    return Err(meta.error("`with` is given more than once"));
+                }
+                let function = meta.value()?.parse()?;
+                with_function = Some((function, meta.path.clone()));
+                return Ok(());
+            }
+
             let rule = if meta.path.is_ident("display") {
                 FieldRule::Display
             } else if meta.path.is_ident("widen") {
@@ -151,10 +178,10 @@ impl FieldAttributes {
                 FieldRule::Skip
             } else if meta.path.is_ident("into") {
                 let wire_type = meta.value()?.parse()?;
-                FieldRule::Into(wire_type)
-            } else if meta.path.is_ident("with") {
-                let function = meta.value()?.parse()?;
-                FieldRule::With(function)
+                FieldRule::Into {
+                    wire_type,
+                    function: None,
+                }
             } else {
                 return Err(
                     meta.error("expected `name`, `display`, `widen`, `into`, `with` or `skip`")
@@ -169,6 +196,20 @@ impl FieldAttributes {
             });
             Ok(())
         });
+
+        if let Some((with, declared_by)) = with_function {
+            match &mut parsed.rule {
+                Some(DeclaredRule {
+                    rule: FieldRule::Into { function, .. },
+                    ..
+                }) => *function = Some(with),
+                _ => errors.report(
+                    declared_by,
+                    "`with` supplies the value of an `into` rule; \
+                     write `into = WireType, with = function`",
+                ),
+            }
+        }
         parsed
     }
 }

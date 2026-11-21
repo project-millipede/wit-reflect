@@ -12,6 +12,8 @@ default = ["derive"]
 derive = ["dep:wit-reflect-macros"]
 
 [dependencies]
+# Identifier case conversions that generated forwarding shares with wit-bindgen.
+heck.workspace = true
 semver.workspace = true
 thiserror.workspace = true
 wit-reflect-macros = { workspace = true, optional = true }
