@@ -8,6 +8,9 @@ and the code that forwards each exported function to its Rust operation. A
 fixture component built this way runs under jco. Applying it to the workbench
 is the remaining phase; see [the phase plan](docs/phases.md).
 
+New here? Read [the developer guide](docs/guide.md): what you write, what is
+generated, what is not, and a complete worked example.
+
 ## Why
 
 The generator comparison in the Apple Code Workbench repository
