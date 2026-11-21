@@ -1,10 +1,11 @@
 //! Fixture: an ordinary Rust library whose contract is generated.
 //!
 //! The types and operations here are written as a library would write them,
-//! without wire types or conversion code. The derives and `#[export]` markers
-//! are the only additions. [`schema`] declares the contract, and
-//! [`generate`] renders the WIT, the bindings file and the forwarding file
-//! that the `session-component` fixture includes.
+//! without wire types or conversion code. The derives and marks are the only
+//! additions, and they are the whole declaration of the contract: each item
+//! states its own part. The `generate` binary renders the WIT, the bindings
+//! file and the forwarding file that the `session-component` fixture
+//! includes; that crate's `Cargo.toml` holds the package and world.
 //!
 //! The [`foreign`] module stands for a dependency crate: its types carry no
 //! derive and hide their fields.
@@ -14,15 +15,10 @@
     reason = "a fixture; the documented items are the ones the generated contract shows"
 )]
 
-// The schema names operations by absolute path, which also has to resolve here.
-extern crate self as session_owner;
-
 use std::error::Error;
 use std::fmt;
 
-use wit_reflect::{
-    ForwardingErrors, Schema, SchemaErrors, WitResource, WitType, export, operation,
-};
+use wit_reflect::{WitResource, WitType, export, exports, named};
 
 pub mod foreign {
     use std::fmt;
@@ -156,6 +152,7 @@ impl Image {
 }
 
 #[derive(Debug, WitType)]
+#[wit(interface = "binary")]
 pub struct Report {
     pub byte_length: u64,
     pub images: Vec<Image>,
@@ -173,7 +170,10 @@ pub enum ErrorKind {
 }
 
 #[derive(Debug, WitType)]
-#[wit(field(name = "message", into = String, with = ToString::to_string))]
+#[wit(
+    interface = "binary",
+    field(name = "message", into = String, with = ToString::to_string)
+)]
 pub struct AnalysisError {
     pub kind: ErrorKind,
 }
@@ -271,17 +271,23 @@ pub struct Outcome<Step> {
     pub steps: Vec<Step>,
 }
 
+// WIT has no generic types: each instantiation is a definition of its own,
+// named after the alias that names it here.
+#[named]
 pub type InspectionStepOutcome = StepOutcome<StepKind, Report, InspectionFailure>;
+#[named]
 pub type InspectionOutcome = Outcome<InspectionStepOutcome>;
 
 /// A client that remembers the selected resource between calls.
 #[derive(Debug, WitResource)]
+#[wit(interface = "native")]
 pub struct Session {
     selection: Option<String>,
     inspections: usize,
     last_step: Option<StepKind>,
 }
 
+#[exports]
 impl Session {
     /// Remember `resource` as the current selection.
     #[export]
@@ -360,7 +366,7 @@ impl Session {
 }
 
 /// Create a session without a selection.
-#[export]
+#[export(interface = "native")]
 #[must_use]
 pub fn create_session() -> Session {
     Session {
@@ -368,102 +374,4 @@ pub fn create_session() -> Session {
         inspections: 0,
         last_step: None,
     }
-}
-
-const WORLD: &str = "session";
-
-/// The contract: which types and operations each interface exports.
-///
-/// # Errors
-///
-/// Returns an error if the package name is not valid.
-pub fn schema() -> Result<Schema, Box<dyn Error>> {
-    let package_name = "example:session@0.1.0".parse()?;
-    let mut schema = Schema::new(package_name);
-    schema
-        .interface("binary")
-        .define::<Report>()
-        .define::<AnalysisError>();
-
-    let mut native = schema.interface("native");
-    native
-        .define_as::<InspectionStepOutcome>("inspection-step-outcome")
-        .define_as::<InspectionOutcome>("inspection-outcome");
-    native
-        .resource::<Session>()
-        .method(operation!(session_owner::Session::select))
-        .method(operation!(session_owner::Session::selection))
-        .method(operation!(session_owner::Session::inspect))
-        .method(operation!(session_owner::Session::progress));
-    native.function(operation!(session_owner::create_session));
-
-    schema
-        .world(WORLD)
-        .export_as("native", "native")
-        .export("binary");
-    Ok(schema)
-}
-
-/// The generated artifacts of the contract, as file contents.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Artifacts {
-    /// The WIT package.
-    pub wit: String,
-    /// The Rust source setting up the world's bindings.
-    pub bindings: String,
-    /// The Rust source implementing the world's exported interfaces.
-    pub forwarding: String,
-}
-
-/// Why the artifacts could not be generated.
-#[derive(Debug)]
-pub enum GenerationError {
-    /// The schema could not be declared.
-    Declaration(Box<dyn Error>),
-    /// The declared schema is not a valid contract.
-    Schema(SchemaErrors),
-    /// The component's Rust files cannot be generated from the contract.
-    Forwarding(ForwardingErrors),
-}
-
-impl fmt::Display for GenerationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Declaration(error) => write!(formatter, "cannot declare the schema: {error}"),
-            Self::Schema(errors) => errors.fmt(formatter),
-            Self::Forwarding(errors) => errors.fmt(formatter),
-        }
-    }
-}
-
-impl Error for GenerationError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Declaration(error) => Some(error.as_ref()),
-            Self::Schema(errors) => Some(errors),
-            Self::Forwarding(errors) => Some(errors),
-        }
-    }
-}
-
-/// Render the artifacts from [`schema`].
-///
-/// # Errors
-///
-/// Returns the schema's problems, or those of the generated Rust files; each
-/// lists every problem found.
-pub fn generate() -> Result<Artifacts, GenerationError> {
-    let schema = schema().map_err(GenerationError::Declaration)?;
-    let package = schema.resolve().map_err(GenerationError::Schema)?;
-    let bindings = package
-        .bindings(WORLD)
-        .map_err(GenerationError::Forwarding)?;
-    let forwarding = package
-        .forwarding(WORLD)
-        .map_err(GenerationError::Forwarding)?;
-    Ok(Artifacts {
-        wit: package.to_string(),
-        bindings,
-        forwarding,
-    })
 }

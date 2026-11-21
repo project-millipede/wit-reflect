@@ -7,7 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-wit-reflect.workspace = true
+# `tasks` serves the `generate` binary; a library that only carries marks
+# does not enable it.
+wit-reflect = { workspace = true, features = ["tasks"] }
 
 [lints]
 workspace = true

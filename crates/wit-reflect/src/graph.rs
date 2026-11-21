@@ -109,6 +109,13 @@ impl TypeGraph {
         definition
     }
 
+    /// The reference to the definition of `key`, as [`TypeGraph::define`]
+    /// returns it.
+    #[cfg(all(feature = "tasks", not(target_family = "wasm")))]
+    pub(crate) fn reference(&self, key: TypeKey) -> Type {
+        reference_to(key, self.definition(key))
+    }
+
     pub(crate) fn cycles(&self) -> &[Vec<&'static str>] {
         &self.cycles
     }

@@ -6,6 +6,13 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# What no Rust item states about the contract. The types and operations
+# are declared by marks in `session-owner`.
+[package.metadata.wit-reflect]
+package = "example:session@0.1.0"
+world = "session"
+exports = [{ interface = "native", name = "native" }, "binary"]
+
 # Build the component itself with
 # `cargo rustc -p session-component --lib --crate-type cdylib --target wasm32-unknown-unknown`.
 # The library target stays an rlib so its tests link on the host.

@@ -5,7 +5,7 @@ use quote::quote;
 use syn::DeriveInput;
 
 use crate::attributes::{ContainerAttributes, Errors};
-use crate::derive::{reject_lifetimes, with_bounds};
+use crate::derive::{interface_registration, reject_lifetimes, with_bounds};
 use crate::names::{kebab_name, runtime_path, with_docs};
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
@@ -20,6 +20,13 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let static_bound = quote! { 'static };
     reject_lifetimes(&input.generics, &mut errors);
     let generics = with_bounds(&input.generics, &static_bound);
+    let registration = interface_registration(
+        input,
+        &container,
+        &runtime,
+        &quote! { resource },
+        &mut errors,
+    );
     errors.finish()?;
 
     let ident = &input.ident;
@@ -36,5 +43,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
         #[automatically_derived]
         impl #impl_generics #runtime::Resource for #ident #type_generics #where_clause {}
+
+        #registration
     })
 }

@@ -6,14 +6,14 @@ the output shown is the committed output.
 
 ## The idea
 
-You keep writing ordinary Rust. You mark what crosses the boundary, declare the
-contract once, and run a generator.
+You keep writing ordinary Rust. You mark what crosses the boundary, each item
+states its own part of the contract, and you run a generator.
 
 | You write | wit-reflect generates | Other tools generate |
 | --- | --- | --- |
 | Rust types and functions, as today | The WIT file | Rust bindings, by wit-bindgen from that WIT |
-| `#[derive(WitType)]`, `#[export]` and rules on them | The bindings file: the schema's part of the `wit_bindgen::generate!` call | TypeScript bindings, by jco from the component |
-| One schema function | The forwarding file: the `impl Guest` blocks for those bindings | |
+| `#[derive(WitType)]`, `#[export]` and rules on them | The bindings file: the contract's part of the `wit_bindgen::generate!` call | TypeScript bindings, by jco from the component |
+| The package and world, in `Cargo.toml` | The forwarding file: the `impl Guest` blocks for those bindings | |
 | | The conversion of every result, inside your derive | |
 
 There is no second data model. A field exists in one place: the Rust type.
@@ -71,69 +71,85 @@ pub enum InspectionFailure {
 ```rust
 /// A client that remembers the selected resource between calls.
 #[derive(WitResource)]
+#[wit(interface = "native")]
 pub struct Session { /* fields are not exported */ }
 
+#[exports]
 impl Session {
     /// Inspect `resource`. It must be the current selection.
     #[export]
     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
+
+    fn analyze(&self, resource: &str) -> Result<Report, InspectionFailure> { /* not exported */ }
 }
 
 /// Create a session without a selection.
-#[export]
+#[export(interface = "native")]
 pub fn create_session() -> Session { /* … */ }
 ```
 
-`#[export]` does not change the function. It makes its signature available to
-a schema. A marked function is not exported until a schema lists it.
+`#[export]` does not change the function. It reflects its signature.
+`#[exports]` on the block registers the marked functions with their resource.
+It is a mark of its own because an attribute on a function can only add to its
+`impl` block, and a registration is a separate item.
 
-### 3. Declare the contract
+### 3. State what the items cannot
 
-This is the only declaration. It says which types and operations each
-interface exports, and nothing about fields or signatures.
+Three things are left, and each is stated where it belongs.
+
+**Which interface owns a type.** Only a type an interface has to own says so.
+Everything it refers to is found through it.
 
 ```rust
-pub fn schema() -> Result<Schema, Box<dyn Error>> {
-    let package_name = "example:session@0.1.0".parse()?;
-    let mut schema = Schema::new(package_name);
-    schema
-        .interface("binary")
-        .define::<Report>()
-        .define::<AnalysisError>();
-
-    let mut native = schema.interface("native");
-    native
-        .define_as::<InspectionStepOutcome>("inspection-step-outcome")
-        .define_as::<InspectionOutcome>("inspection-outcome");
-    native
-        .resource::<Session>()
-        .method(operation!(session_owner::Session::select))
-        .method(operation!(session_owner::Session::selection))
-        .method(operation!(session_owner::Session::inspect));
-    native.function(operation!(session_owner::create_session));
-
-    schema
-        .world("session")
-        .export_as("native", "native")
-        .export("binary");
-    Ok(schema)
-}
+#[derive(WitType)]
+#[wit(interface = "binary")]
+pub struct Report { /* … */ }
 ```
 
-The schema lists 5 of the 17 definitions in the generated WIT. `Image`,
-`FileRange`, `Failure` and nine more are not listed. They are found because
-the listed types and operations refer to them.
+**What an instantiation of a generic type is called.** WIT has no generic
+types: `Outcome<A>` and `Outcome<B>` are two definitions and need two names. A
+type alias is where Rust names one, and the mark makes that name visible:
+
+```rust
+#[named]
+pub type InspectionStepOutcome = StepOutcome<StepKind, Report, InspectionFailure>;
+#[named]
+pub type InspectionOutcome = Outcome<InspectionStepOutcome>;
+```
+
+**The package and the world.** No Rust item is a package. They are settings of
+the component crate, in its `Cargo.toml`:
+
+```toml
+[package.metadata.wit-reflect]
+package = "example:session@0.1.0"
+world = "session"
+exports = [{ interface = "native", name = "native" }, "binary"]
+```
+
+Five of the 17 definitions in the generated WIT carry such a mark: two
+interface owners, two aliases and the resource. `Image`, `FileRange`, `Failure`
+and nine more carry only the derive. They are found because the marked types
+and operations refer to them.
 
 ### 4. Generate
 
+The generator program declares nothing. It links the crate whose items are
+marked and names the component crate's manifest:
+
 ```rust
-let package = schema()?.resolve()?;               // validates; reports every problem at once
-let wit = package.to_string();                    // the WIT file
-let bindings = package.bindings("session")?;      // sets up the component's bindings
-let forwarding = package.forwarding("session")?;  // implements the binding traits
+use session_owner as _;
+
+fn main() -> ExitCode {
+    wit_reflect::tasks::run(COMPONENT_MANIFEST)
+}
 ```
 
-The fixture wraps these four lines in a binary with two modes:
+`use session_owner as _;` is required. Rust links a dependency only if the
+program names it, and an unlinked crate registers nothing. The generator then
+fails and says so.
+
+The binary has two modes:
 
 ```bash
 cargo run -p session-owner --bin generate
@@ -259,7 +275,34 @@ export!(Component);
 and the derive the forwarding needs. You pass what describes your crate: the
 WIT directory, and any other `wit_bindgen::generate!` option except `world`.
 
-## The schema, call by call
+## The marks and settings
+
+| You write | Where | Effect |
+| --- | --- | --- |
+| `#[wit(interface = "…")]` | a derived type or resource | The interface defines it. |
+| `#[export(interface = "…")]` | a free function | The interface exports it. |
+| `#[exports]` | an `impl` block | Its functions marked `#[export]` are exported from the resource. |
+| `#[named]` | a type alias | The instantiation is named after the alias, in kebab case. |
+| `package`, `world` | `[package.metadata.wit-reflect]` | The package and the world's name. |
+| `imports`, `exports` | the same table | The world's items. `{ interface = "…", name = "…" }` gives an export its own name. |
+| `wit`, `bindings`, `forwarding` | the same table | Output paths. They default to `wit/<world>.wit`, `src/bindings.rs` and `src/forwarding.rs`. |
+| `[[package.metadata.wit-reflect.function]]` | the same file | A function the component crate implements itself: `interface`, `name`, `path`, and optionally `returns` and `docs`. |
+
+A component crate compiles only after its files are generated, so it cannot
+register anything. That is the one case for a `function` entry.
+
+Generated code calls a registered operation at the root of its crate:
+`session_owner::create_session`, `session_owner::Session::inspect`. If it is
+exported elsewhere, say where: `#[export(interface = "…", path = owner::api::f)]`
+or `#[exports(path = owner::api::Session)]`.
+
+Registrations are applied in source order: by package name, then file and
+line. Interfaces and definitions appear in that order in the WIT.
+
+## Declaring with a schema program instead
+
+The marks are a front end to `Schema`. A program can also declare a contract
+call by call, for example to generate two contracts from the same crates.
 
 | Call | Meaning | Effect in the WIT |
 | --- | --- | --- |
@@ -281,8 +324,8 @@ Three rules decide what the declaration cannot leave open:
   A type reached from two interfaces must be declared in one; the other gets a
   `use`. Above, `report` is declared in `binary`, so `native` imports it.
 - **Each instantiation needs its own name.** `Outcome<A>` and `Outcome<B>` are
-  two definitions with the same default name. Name them with `define_as`. A
-  Rust type alias names the same instantiation as its expansion.
+  two definitions with the same default name. Name them with `#[named]` on an
+  alias, or with `define_as`. No name is composed from the type arguments.
 - **Operation paths are absolute.** `operation!` records the path as written,
   and the forwarding file calls the function by it from another crate. Start
   it with a crate name or `crate`.
@@ -352,8 +395,9 @@ a case, the `remote` declaration stops compiling.
 
 | Not generated: you write it | Size in the fixture |
 | --- | --- |
-| The schema function | 26 lines |
-| The program that writes and checks the three files | about 95 lines; the library has no ready-made command yet |
+| The marks that place and name: `interface`, `#[exports]`, `#[named]` | 7 marks |
+| The contract settings in `Cargo.toml` | 4 lines |
+| The generator program | one `use` and one call to `wit_reflect::tasks::run` |
 | The component crate's `include!`, bindings call, `mod` and `export!` | 6 lines |
 | Conversions and wire records for types of other crates | a few lines per foreign type |
 | Cargo wiring: dependencies and, if wanted, a default-off feature for the macros | a few lines |
@@ -521,7 +565,15 @@ error: a `&mut` parameter cannot be exported: changes to it would be lost
 When the generator runs, all at once:
 
 ```text
+no declaration is registered: the program links no crate with marked items;
+name each such crate once, for example with `use owner_crate as _;`
+
+the contract settings in fixtures/session/component/Cargo.toml are invalid:
+- `world` is missing in the settings
+- `exprots` in the settings is not a known key
+
 the WIT schema is invalid:
+- `…Session` exports functions but no interface of this package declares it
 - interface `native` would define `outcome` more than once, for `…Outcome<…Report…>` and `…Outcome<…SelectionState…>`
 - `…FileRange` is used by interfaces `headers`, `segments` but declared in none of them
 
@@ -540,12 +592,17 @@ error[E0277]: `u32` cannot be assembled from the wire parts `std::string::String
 
 ## Checklist for a new contract
 
-1. Derive `WitType` on each type you name in the schema; the compiler then
-   points at every type it reaches that still needs it.
+1. Derive `WitType` on each type an operation returns or takes; the compiler
+   then points at every type it reaches that still needs it.
 2. Add a rule where the compiler reports a field without a WIT representation.
-3. Derive `WitResource` on each resource and mark its functions with `#[export]`.
-4. Write the schema function. Run the generator and fix what it reports.
-5. Commit the WIT, the bindings file and the forwarding file. Add the check to
+3. Derive `WitResource` on each resource, mark its functions with `#[export]`
+   and their `impl` blocks with `#[exports]`.
+4. State the interface on each type an interface has to own, on each resource
+   and on each exported free function. Mark an alias of each generic
+   instantiation with `#[named]`.
+5. Add the settings to the component crate's `Cargo.toml` and a generator
+   program that links the owner crates. Run it and fix what it reports.
+6. Commit the WIT, the bindings file and the forwarding file. Add the check to
    your test run.
-6. In the component crate, include the bindings file, call
+7. In the component crate, include the bindings file, call
    `generate_bindings!` with your WIT path and include the forwarding module.

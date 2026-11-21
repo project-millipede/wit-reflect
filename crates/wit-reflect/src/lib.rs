@@ -121,6 +121,32 @@
 //! [`Schema::external_interface`] places types that a dependency package
 //! already defines, so they are imported instead of redefined.
 //!
+//! # Declaring on the items
+//!
+//! A schema program is not required. Each item can state its own part of the
+//! contract, and the marks register themselves when the program is linked:
+//!
+//! ```text
+//! #[derive(WitResource)]
+//! #[wit(interface = "native")]
+//! pub struct Session { /* … */ }
+//!
+//! #[wit_reflect::exports]
+//! impl Session {
+//!     #[export]
+//!     pub fn select(&mut self, resource: &str) { /* … */ }
+//! }
+//!
+//! #[export(interface = "native")]
+//! pub fn create_session() -> Session { /* … */ }
+//! ```
+//!
+//! [`Schema::from_registry`] builds the schema above from these marks. The
+//! [`registry`] module lists them and explains how the declaring crates are
+//! linked. With the `tasks` feature, the `tasks` module reads the package and
+//! world from the component crate's `Cargo.toml` and writes or checks the
+//! generated files, so a generator program is a single call.
+//!
 //! # Representation rules
 //!
 //! Some fields cannot cross a boundary as stored: a dependency's type, a
@@ -252,10 +278,14 @@ mod identifier;
 pub mod lower;
 mod package_name;
 mod reflect;
+#[cfg(not(target_family = "wasm"))]
+pub mod registry;
 mod render;
 mod resolve;
 pub mod rule;
 mod schema;
+#[cfg(all(feature = "tasks", not(target_family = "wasm")))]
+pub mod tasks;
 mod types;
 
 pub use error::{SchemaError, SchemaErrors};
@@ -285,6 +315,10 @@ pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 /// # Attributes
 ///
 /// - `#[wit(name = "…")]` on the item, a field or a variant sets its WIT name.
+/// - `#[wit(interface = "…")]` on the item registers it as defined in that
+///   interface, for [`Schema::from_registry`]. Only a type that an interface
+///   has to own needs it; types found through it follow the placement rules
+///   of [`Schema::resolve`]. A generic type cannot name an interface.
 /// - `#[wit(payload = "…")]` on a struct-like variant names its payload
 ///   record. The default is `<variant-name>-<case-name>`.
 /// - `#[wit(transparent)]` on a single-field struct uses the field's
@@ -362,8 +396,10 @@ pub use wit_reflect_macros::WitType;
 /// by the schema.
 ///
 /// `#[wit(name = "…")]` sets the resource's name; the default is the Rust name
-/// in kebab case. `#[wit(crate = path)]` names this crate when it is
-/// re-exported elsewhere.
+/// in kebab case. `#[wit(interface = "…")]` registers the resource as defined
+/// in that interface, for [`Schema::from_registry`]; its functions are
+/// registered by [`macro@exports`]. `#[wit(crate = path)]` names this crate
+/// when it is re-exported elsewhere.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::WitResource;
 
@@ -388,6 +424,14 @@ pub use wit_reflect_macros::WitResource;
 /// kebab case. `#[export(crate = path)]` names this crate when it is
 /// re-exported elsewhere.
 ///
+/// # Registering
+///
+/// `#[export(interface = "…")]` on a free function also registers it as
+/// exported from that interface, for [`Schema::from_registry`]. Generated
+/// forwarding code calls it at the root of its crate, `owner::function`;
+/// `path = owner::module::function` names another place. A function of a
+/// resource is registered by [`macro@exports`] on its `impl` block.
+///
 /// Not exported: `async fn`, `unsafe fn`, generic functions, `impl Trait`,
 /// methods that consume `self`, `&mut` parameters, pattern parameters and
 /// reference results. Each is a compile error at the function.
@@ -396,6 +440,60 @@ pub use wit_reflect_macros::WitResource;
 /// it as `#[cfg_attr(feature = "wit", wit_reflect::export)]`.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::export;
+
+/// Registers the functions of an `impl` block that are marked with
+/// [`macro@export`], for [`Schema::from_registry`].
+///
+/// ```text
+/// #[wit_reflect::exports]
+/// impl Session {
+///     #[export]
+///     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
+///
+///     fn analyze(&self, resource: &str) -> Report { /* not exported */ }
+/// }
+/// ```
+///
+/// The functions are exported from the interface that declares the resource,
+/// in the order they are written. A resource may have several marked blocks.
+///
+/// The mark belongs on the block because `#[export]` on a function cannot
+/// register anything: a registration is an item of its own, and an attribute
+/// on a function can only add to its `impl` block. A function marked
+/// `#[cfg_attr(predicate, export)]` is registered under the same predicate.
+///
+/// Generated forwarding code names the resource at the root of its crate,
+/// `owner::Session`; `#[exports(path = owner::module::Session)]` names another
+/// place. `#[exports(crate = path)]` names this crate when it is re-exported
+/// elsewhere.
+///
+/// A block without a marked function, a trait implementation and a generic
+/// block are compile errors.
+#[cfg(feature = "derive")]
+pub use wit_reflect_macros::exports;
+
+/// Registers the name of the type a type alias stands for, for
+/// [`Schema::from_registry`].
+///
+/// WIT has no generic types of its own, so each instantiation of a generic
+/// Rust type is a separate definition and needs a name. A type alias is where
+/// Rust code names one:
+///
+/// ```text
+/// #[wit_reflect::named]
+/// pub type InspectionOutcome = Outcome<InspectionStepOutcome>;
+/// ```
+///
+/// defines `Outcome<InspectionStepOutcome>` as `inspection-outcome`, in the
+/// interface the placement rules of [`Schema::resolve`] give it. The mark is
+/// needed because the compiler resolves an alias away: no derive and no trait
+/// can see its name.
+///
+/// `#[named(name = "…")]` sets another name. `#[named(crate = path)]` names
+/// this crate when it is re-exported elsewhere. An alias with parameters is a
+/// compile error.
+#[cfg(feature = "derive")]
+pub use wit_reflect_macros::named;
 
 /// Refers to the reflected signature of a function marked with
 /// [`macro@export`], for [`InterfaceBuilder::function`] and

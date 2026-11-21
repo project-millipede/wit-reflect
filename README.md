@@ -2,11 +2,12 @@
 
 Generate WIT directly from the Rust types an implementation already uses.
 
-**Status: Phases 1 to 6 are implemented.** From ordinary Rust types and
+**Status: Phases 1 to 7 are implemented.** From ordinary Rust types and
 operations the library generates the WIT contract, the bindings setup, the
 conversion of results and the code that forwards each exported function to
-its Rust operation. A fixture component built this way runs under jco, and one
-production component is generated with it. See
+its Rust operation. The contract is declared on the items themselves; no
+schema program is needed. A fixture component built this way runs under jco,
+and one production component is generated with it. See
 [the phase plan](docs/phases.md) for the evidence and the limits.
 
 New here? Read [the developer guide](docs/guide.md): what you write, what is
@@ -101,6 +102,44 @@ world files {
 }
 ```
 
+A contract needs no schema program. Each item can state its own part, and the
+package and world are settings of the component crate:
+
+```rust
+#[derive(WitType)]
+#[wit(interface = "binary")]         // only a type an interface has to own
+pub struct Report { /* … */ }
+
+#[wit_reflect::named]                // WIT has no generics: names this instantiation
+pub type InspectionOutcome = Outcome<InspectionStepOutcome>;
+
+#[derive(WitResource)]
+#[wit(interface = "native")]
+pub struct Session { /* … */ }
+
+#[wit_reflect::exports]              // registers the functions marked below
+impl Session {
+    #[export]
+    pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
+}
+```
+
+```toml
+[package.metadata.wit-reflect]
+package = "example:session@0.1.0"
+world = "session"
+exports = [{ interface = "native", name = "native" }, "binary"]
+```
+
+```rust
+// The whole generator program.
+use session_owner as _;
+
+fn main() -> std::process::ExitCode {
+    wit_reflect::tasks::run("fixtures/session/component/Cargo.toml")
+}
+```
+
 Where a field cannot cross the boundary as stored, a rule names its wire type:
 
 ```rust
@@ -177,9 +216,9 @@ impl crate::exports::native::GuestSession for ResourceCell<session_owner::Sessio
 }
 ```
 
-`fixtures/session` is a complete example: `owner` holds the ordinary Rust and
-the schema, `component` holds only the generated WIT, bindings file and
-forwarding file.
+`fixtures/session` is a complete example: `owner` holds the ordinary Rust
+with its marks, `component` holds the contract settings and the generated
+WIT, bindings file and forwarding file.
 
 ### Types that cross unchanged
 
@@ -202,7 +241,7 @@ that is not exported at its crate's root.
 | Step | Owner | What happens |
 | --- | --- | --- |
 | Reflect | `#[derive(WitType)]`, `#[derive(WitResource)]` and `#[export]` in the crate that owns the item | Fields and signatures are described as declared. The Rust compiler has already resolved aliases, re-exports, dependency crates and generic arguments. |
-| Declare | `Schema` in a generator program | Interfaces, the types and operations each one exports, names for generic instantiations, external interfaces and worlds. |
+| Declare | Marks on the items, collected at link time; settings in the component crate's `Cargo.toml`. Or `Schema` calls in a generator program. | Interfaces, the types and operations each one exports, names for generic instantiations, external interfaces and worlds. |
 | Resolve | `Schema::resolve` | Every type gets one owning interface and one name; all problems are reported together. |
 | Render | `ResolvedPackage: Display`, `ResolvedPackage::bindings` and `ResolvedPackage::forwarding` | Deterministic WIT text, the schema's part of the `wit_bindgen::generate!` call, and the Rust file that implements wit-bindgen's traits for a world. |
 | Convert | `Lower`, derived with `WitType`; `FromParts`, derived on the bindings | A result is taken apart in declaration order with its rules applied, and the binding value is assembled by position. Neither side names the other's types. A type the bindings can use as it is crosses unchanged instead. |
@@ -211,13 +250,17 @@ Rules worth knowing:
 
 - **Instantiations are never merged.** `Outcome<A>` and `Outcome<B>` are two
   definitions. If both keep the default name, resolution fails and names both
-  Rust types; give each a name with `define_as`.
+  Rust types; mark an alias of each with `#[named]`, or use `define_as`.
 - **Each type has one owning interface.** A declared type belongs where it is
   declared. An undeclared dependency belongs to the only interface that reaches
   it. A type reached from two interfaces must be declared in one of them.
-- **Operations are selected, never collected.** `#[export]` only reflects a
-  signature. A method is part of the contract when the schema lists it, so
-  methods from several `impl` blocks combine and unlisted ones stay private.
+- **Operations are exported deliberately.** `#[export]` only reflects a
+  signature. A method joins the contract when its `impl` block is marked
+  `#[exports]` or a schema lists it, so methods from several blocks combine
+  and unmarked ones stay private.
+- **Registrations need their crate linked.** Rust links a dependency only if
+  the program names it. A generator writes `use owner as _;`; with nothing
+  registered it fails instead of generating an empty contract.
 - **Handles follow the Rust signature.** A resource passed or returned by value
   is `own<r>`; behind a reference it is `borrow<r>`.
 - **Dependency types are imported.** A type placed with
@@ -245,18 +288,23 @@ To keep an owner crate's ordinary build free of this library, gate the macros:
 #[cfg_attr(feature = "wit", derive(wit_reflect::WitType))]
 pub struct BinaryReport { /* fields */ }
 
+#[cfg_attr(feature = "wit", wit_reflect::exports)]
 impl Session {
     #[cfg_attr(feature = "wit", wit_reflect::export)]
     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
 }
 ```
 
+The registry and the settings reader exist only on non-Wasm targets, so a
+component carries neither. The settings reader is behind the `tasks` feature,
+which only a generator program enables.
+
 ## Layout
 
 ```text
-crates/wit-reflect/          reflection, schema, resolution, rendering, lowering
-crates/wit-reflect-macros/   derives, #[export] and operation!
-fixtures/session/owner/      example library, its schema and the generate binary
+crates/wit-reflect/          reflection, schema, registry, resolution, rendering, lowering, tasks
+crates/wit-reflect-macros/   derives, #[export], #[exports], #[named] and operation!
+fixtures/session/owner/      example library with its marks, and the generate binary
 fixtures/session/component/  example component made of generated artifacts
 docs/phases.md               definitions, phases and their acceptance evidence
 docs/rust-practices.md       Rust practices applied in this workspace
@@ -294,3 +342,6 @@ cargo run -p session-owner --bin generate -- --check
 - Crossing unchanged for generic types and for enums whose cases carry data.
   They are converted.
 - Comparing a type placed in an external interface with that interface's WIT.
+- More than one contract per generator program when it is declared by marks,
+  and types of external interfaces declared by marks. Both work with a schema
+  program.

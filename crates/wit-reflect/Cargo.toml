@@ -10,6 +10,9 @@ publish.workspace = true
 default = ["derive"]
 # Re-export `#[derive(WitType)]`. Disable it to use only manual implementations.
 derive = ["dep:wit-reflect-macros"]
+# Read the contract settings from a `Cargo.toml` and write or check the
+# generated files. Enable it in a generator program only.
+tasks = ["dep:toml"]
 
 [dependencies]
 # Identifier case conversions that generated forwarding shares with wit-bindgen.
@@ -17,6 +20,13 @@ heck.workspace = true
 semver.workspace = true
 thiserror.workspace = true
 wit-reflect-macros = { workspace = true, optional = true }
+
+# Marked items register themselves at link time, and a generator program
+# reads the contract settings. A component is built from generated files and
+# needs neither.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+inventory.workspace = true
+toml = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Independent WIT grammar for the rendering boundary test.
@@ -40,4 +50,8 @@ required-features = ["derive"]
 
 [[test]]
 name = "unchanged_types"
+required-features = ["derive"]
+
+[[test]]
+name = "registry"
 required-features = ["derive"]

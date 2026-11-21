@@ -14,12 +14,18 @@ use syn::{
 };
 
 use crate::attributes::Errors;
-use crate::names::{companion_ident, kebab_name, runtime_path, with_docs};
+use crate::names::{
+    companion_ident, kebab_name, public_path, registration, runtime_path, with_docs,
+};
 
 /// `#[export(...)]` arguments.
 #[derive(Default)]
 struct ExportOptions {
     name: Option<LitStr>,
+    /// `interface = "…"`: the interface that exports a free function.
+    interface: Option<LitStr>,
+    /// `path = …`: where the component crate can name a free function.
+    public_path: Option<Path>,
     /// `static` or `constructor`, with the tokens that requested it.
     association: Option<(Association, Path)>,
     crate_path: Option<Path>,
@@ -47,6 +53,20 @@ impl ExportOptions {
             let name = meta.value()?.parse()?;
             self.name = Some(name);
             Ok(())
+        } else if meta.path.is_ident("interface") {
+            if self.interface.is_some() {
+                return Err(meta.error("`interface` is given more than once"));
+            }
+            let interface = meta.value()?.parse()?;
+            self.interface = Some(interface);
+            Ok(())
+        } else if meta.path.is_ident("path") {
+            if self.public_path.is_some() {
+                return Err(meta.error("`path` is given more than once"));
+            }
+            let public_path = meta.value()?.parse()?;
+            self.public_path = Some(public_path);
+            Ok(())
         } else if meta.path.is_ident("static") {
             self.associate(Association::Static, meta)
         } else if meta.path.is_ident("constructor") {
@@ -56,7 +76,8 @@ impl ExportOptions {
             self.crate_path = Some(crate_path);
             Ok(())
         } else {
-            Err(meta.error("expected `name`, `static`, `constructor` or `crate`"))
+            Err(meta
+                .error("expected `name`, `interface`, `path`, `static`, `constructor` or `crate`"))
         }
     }
 
@@ -95,6 +116,13 @@ pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<
     let mut errors = Errors::default();
     reject_unsupported_qualifiers(signature, &mut errors);
     let export = classify(signature, &options, &mut errors);
+    if let (Some(interface), false) = (&options.interface, matches!(export, Export::Free)) {
+        errors.report(
+            interface,
+            "`interface` applies to a free function; a resource's functions are \
+             exported from the resource's interface",
+        );
+    }
     let params = reflect_params(signature, &runtime, &mut errors);
     let result = reflect_result(signature, &runtime, &mut errors);
     errors.finish()?;
@@ -126,6 +154,20 @@ pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<
 
     let visibility = &function.vis;
     let companion = companion_ident(&signature.ident);
+    let registration = match &options.interface {
+        Some(interface) => {
+            let rust_path = public_path(options.public_path.as_ref(), &signature.ident, None);
+            registration(
+                &runtime,
+                &quote! {
+                    schema
+                        .interface(#interface)
+                        .function(#runtime::Operation::new(#companion, #rust_path));
+                },
+            )
+        }
+        None => TokenStream::new(),
+    };
     // The companion is referenced only by a schema, which the owning crate
     // usually does not contain.
     Ok(quote! {
@@ -137,6 +179,8 @@ pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<
         #visibility fn #companion(graph: &mut #runtime::TypeGraph) -> #companion_type {
             #companion_value
         }
+
+        #registration
     })
 }
 

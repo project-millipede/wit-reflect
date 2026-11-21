@@ -10,6 +10,8 @@ use crate::package_name::PackageName;
 use crate::reflect::{Resource, WitType};
 use crate::resolve::{self, ResolvedPackage};
 use crate::types::Type;
+#[cfg(all(feature = "tasks", not(target_family = "wasm")))]
+use crate::types::TypeKey;
 
 /// The declaration of one WIT package.
 ///
@@ -19,6 +21,11 @@ use crate::types::Type;
 ///
 /// Declarations are recorded as given. [`Schema::resolve`] is the single place
 /// that validates them, so every problem is reported together.
+///
+/// Two declarations do not depend on the order they are given in:
+/// [`Schema::name_instantiation`] and [`Schema::resource_method`]. Items that
+/// register themselves use them, because each one knows only its own part of
+/// the contract.
 #[derive(Debug)]
 pub struct Schema {
     package: PackageName,
@@ -26,9 +33,27 @@ pub struct Schema {
     interfaces: Vec<InterfaceDeclaration>,
     external_interfaces: Vec<ExternalInterfaceDeclaration>,
     worlds: Vec<WorldDeclaration>,
+    names: Vec<DeclaredName>,
+    resource_methods: Vec<DeclaredResourceMethod>,
 }
 
+/// One `name_instantiation` call: a name that follows a type to its interface.
 #[derive(Debug)]
+pub(crate) struct DeclaredName {
+    pub(crate) rust_name: &'static str,
+    pub(crate) ty: Type,
+    pub(crate) name: String,
+}
+
+/// One `resource_method` call: a function of a resource declared elsewhere.
+#[derive(Debug)]
+pub(crate) struct DeclaredResourceMethod {
+    pub(crate) rust_name: &'static str,
+    pub(crate) resource: Type,
+    pub(crate) method: DeclaredMethod,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct InterfaceDeclaration {
     pub(crate) name: String,
     pub(crate) declared: Vec<DeclaredType>,
@@ -36,7 +61,7 @@ pub(crate) struct InterfaceDeclaration {
 }
 
 /// One `function` call: a free function of an interface.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct DeclaredFunction {
     pub(crate) function: Function,
     /// The path that names the Rust function in generated forwarding code.
@@ -52,7 +77,7 @@ pub(crate) struct ExternalInterfaceDeclaration {
 }
 
 /// One `define`, `define_as`, `resource` or `resource_as` call.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct DeclaredType {
     pub(crate) rust_name: &'static str,
     pub(crate) ty: Type,
@@ -62,7 +87,7 @@ pub(crate) struct DeclaredType {
     pub(crate) methods: Vec<DeclaredMethod>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct DeclaredMethod {
     pub(crate) kind: MethodKind,
     pub(crate) function: Function,
@@ -101,6 +126,8 @@ impl Schema {
             interfaces: Vec::new(),
             external_interfaces: Vec::new(),
             worlds: Vec::new(),
+            names: Vec::new(),
+            resource_methods: Vec::new(),
         }
     }
 
@@ -181,6 +208,49 @@ impl Schema {
         }
     }
 
+    /// Name `T` in whichever interface defines it.
+    ///
+    /// Use this for an instantiation of a generic type when the place that
+    /// knows its name does not know its interface, such as a marked type
+    /// alias:
+    ///
+    /// ```text
+    /// schema.name_instantiation::<Outcome<InspectionStep>>("inspection-outcome");
+    /// ```
+    ///
+    /// The type is placed by the usual rules. A name given with
+    /// [`InterfaceBuilder::define_as`] takes precedence. A name for a type the
+    /// package never reaches has no effect.
+    pub fn name_instantiation<T: WitType>(&mut self, name: &str) -> &mut Self {
+        let ty = T::wit_type(&mut self.graph);
+        self.names.push(DeclaredName {
+            rust_name: type_name::<T>(),
+            ty,
+            name: name.to_owned(),
+        });
+        self
+    }
+
+    /// Export a function of the resource `R` from the interface that declares
+    /// `R`, whether that declaration comes before or after this call.
+    ///
+    /// Functions recorded here follow the ones listed with
+    /// [`ResourceBuilder::method`], in the order of the calls.
+    pub fn resource_method<R: Resource>(&mut self, operation: Operation<Method<R>>) -> &mut Self {
+        let resource = R::wit_type(&mut self.graph);
+        let method = (operation.reflect)(&mut self.graph);
+        self.resource_methods.push(DeclaredResourceMethod {
+            rust_name: type_name::<R>(),
+            resource,
+            method: DeclaredMethod {
+                kind: method.kind,
+                function: method.function,
+                rust_path: operation.rust_path,
+            },
+        });
+        self
+    }
+
     /// Validate the declarations and assign every type its name and interface.
     ///
     /// Each named type belongs to exactly one interface:
@@ -197,8 +267,9 @@ impl Schema {
     ///
     /// Returns every [`SchemaError`](crate::SchemaError) found: invalid or
     /// clashing names, a type reached from several interfaces without an
-    /// owner, a type declared twice, recursive types, empty definitions, unit
-    /// values outside a `result`, invalid constructors, and world items that
+    /// owner, a type declared twice or named twice, recursive types, empty
+    /// definitions, unit values outside a `result`, invalid constructors,
+    /// functions of a resource no interface declares, and world items that
     /// refer to nothing.
     pub fn resolve(&self) -> Result<ResolvedPackage, SchemaErrors> {
         resolve::resolve(self)
@@ -222,6 +293,62 @@ impl Schema {
 
     pub(crate) fn worlds(&self) -> &[WorldDeclaration] {
         &self.worlds
+    }
+
+    pub(crate) fn names(&self) -> &[DeclaredName] {
+        &self.names
+    }
+
+    /// Export from `interface` a free function whose signature is stated
+    /// instead of reflected.
+    #[cfg(all(feature = "tasks", not(target_family = "wasm")))]
+    pub(crate) fn declare_function(
+        &mut self,
+        interface: &str,
+        function: Function,
+        rust_path: &'static str,
+    ) {
+        let builder = self.interface(interface);
+        builder.interface.functions.push(DeclaredFunction {
+            function,
+            rust_path,
+        });
+    }
+
+    /// A reference to every reflected type that `name` names: a name given
+    /// with [`Schema::name_instantiation`] or `define_as`, or else the type's
+    /// default name.
+    #[cfg(all(feature = "tasks", not(target_family = "wasm")))]
+    pub(crate) fn types_named(&self, name: &str) -> Vec<Type> {
+        let declared_names = self
+            .interfaces
+            .iter()
+            .flat_map(|interface| &interface.declared)
+            .filter_map(|declared| Some((&declared.ty, declared.name.as_deref()?)));
+        let given_names = self
+            .names
+            .iter()
+            .map(|declared| (&declared.ty, declared.name.as_str()));
+        let explicit_names: Vec<(TypeKey, &str)> = declared_names
+            .chain(given_names)
+            .filter_map(|(ty, given_name)| Some((ty.definition_key()?, given_name)))
+            .collect();
+
+        let mut types = Vec::new();
+        for (key, definition) in self.graph.definitions() {
+            let explicit_name = explicit_names
+                .iter()
+                .find(|(named_key, _)| named_key == key)
+                .map(|(_, given_name)| *given_name);
+            if explicit_name.unwrap_or(definition.name()) == name {
+                types.push(self.graph.reference(*key));
+            }
+        }
+        types
+    }
+
+    pub(crate) fn resource_methods(&self) -> &[DeclaredResourceMethod] {
+        &self.resource_methods
     }
 }
 

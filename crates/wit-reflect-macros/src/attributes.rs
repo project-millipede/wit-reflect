@@ -36,6 +36,8 @@ impl Errors {
 #[derive(Default)]
 pub(crate) struct ContainerAttributes {
     pub(crate) name: Option<LitStr>,
+    /// `interface = "…"`: the interface that defines the type.
+    pub(crate) interface: Option<LitStr>,
     pub(crate) transparent: Option<Path>,
     pub(crate) crate_path: Option<Path>,
     /// `field(name = "…", into = W, with = function)`, in declaration order.
@@ -96,6 +98,8 @@ impl ContainerAttributes {
         parse_wit_attributes(attributes, errors, |meta| {
             if meta.path.is_ident("name") {
                 set_string(&mut parsed.name, &meta)
+            } else if meta.path.is_ident("interface") {
+                set_string(&mut parsed.interface, &meta)
             } else if meta.path.is_ident("transparent") {
                 parsed.transparent = Some(meta.path.clone());
                 Ok(())
@@ -128,8 +132,8 @@ impl ContainerAttributes {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "expected `name`, `transparent`, `field`, `cases`, `remote`, `convert`, \
-                     `path` or `crate`",
+                    "expected `name`, `interface`, `transparent`, `field`, `cases`, `remote`, \
+                     `convert`, `path` or `crate`",
                 ))
             }
         });

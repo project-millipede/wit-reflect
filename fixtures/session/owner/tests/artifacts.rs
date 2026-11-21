@@ -2,28 +2,20 @@
 
 use std::error::Error;
 
-/// The files the component crate compiles, as they are committed.
-const COMMITTED_WIT: &str = include_str!("../../component/wit/session.wit");
-const COMMITTED_BINDINGS: &str = include_str!("../../component/src/bindings.rs");
-const COMMITTED_FORWARDING: &str = include_str!("../../component/src/forwarding.rs");
+// The marked items register themselves; linking their crate is all it takes.
+use session_owner as _;
+
+/// The manifest of the component crate that includes the artifacts.
+const COMPONENT_MANIFEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../component/Cargo.toml");
 
 /// The component is built from committed files, so they must be exactly what
-/// the schema generates. A difference means a Rust declaration or the schema
-/// changed without regenerating, or the generated text changed unreviewed.
+/// the declarations generate. A difference means a Rust declaration or a
+/// setting changed without regenerating, or the generated text changed
+/// unreviewed.
 ///
 /// Refresh the files with `cargo run -p session-owner --bin generate`.
 #[test]
-fn committed_artifacts_are_what_the_schema_generates() -> Result<(), Box<dyn Error>> {
-    let generated = session_owner::generate()?;
-
-    assert_eq!(generated.wit, COMMITTED_WIT, "wit/session.wit is stale");
-    assert_eq!(
-        generated.bindings, COMMITTED_BINDINGS,
-        "src/bindings.rs is stale"
-    );
-    assert_eq!(
-        generated.forwarding, COMMITTED_FORWARDING,
-        "src/forwarding.rs is stale"
-    );
+fn committed_artifacts_are_what_the_declarations_generate() -> Result<(), Box<dyn Error>> {
+    wit_reflect::tasks::check(COMPONENT_MANIFEST)?;
     Ok(())
 }

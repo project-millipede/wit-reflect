@@ -14,8 +14,8 @@ use crate::graph::TypeGraph;
 use crate::identifier::{self, Escaped};
 use crate::package_name::{self, PackageName};
 use crate::schema::{
-    DeclaredMethod, DeclaredType, Direction, ExternalInterfaceDeclaration, InterfaceDeclaration,
-    Schema, WorldDeclaration,
+    DeclaredMethod, DeclaredName, DeclaredResourceMethod, DeclaredType, Direction,
+    ExternalInterfaceDeclaration, InterfaceDeclaration, Schema, WorldDeclaration,
 };
 use crate::types::{Case, Field, Payload, Type, TypeDef, TypeDefKind, TypeKey};
 
@@ -157,17 +157,22 @@ impl ResolvedPackage {
 
 pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> {
     let graph = schema.graph();
-    let declarations = schema.interfaces();
     let externals = schema.external_interfaces();
 
     // 1. Check declarations and place types. These problems are independent
     //    of each other, so they are reported together.
     let mut declaration_errors = Vec::new();
+    let declarations = &attach_resource_methods(
+        schema.interfaces(),
+        schema.resource_methods(),
+        &mut declaration_errors,
+    );
     report_cycles(graph, &mut declaration_errors);
     check_package_items(declarations, schema.worlds(), &mut declaration_errors);
     check_external_paths(externals, &mut declaration_errors);
     check_operations(graph, declarations, &mut declaration_errors);
-    let placement = Placement::assign(graph, declarations, externals, &mut declaration_errors);
+    let mut placement = Placement::assign(graph, declarations, externals, &mut declaration_errors);
+    placement.apply_names(schema.names(), &mut declaration_errors);
     check_definitions(graph, &placement, &mut declaration_errors);
     let worlds = resolve_worlds(schema.worlds(), declarations, &mut declaration_errors);
     SchemaErrors::check(declaration_errors)?;
@@ -196,6 +201,36 @@ pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> 
         worlds,
         type_names: names.type_names(),
     })
+}
+
+/// The interfaces with every separately recorded resource function added to
+/// the declaration of its resource.
+fn attach_resource_methods(
+    declarations: &[InterfaceDeclaration],
+    resource_methods: &[DeclaredResourceMethod],
+    errors: &mut Vec<SchemaError>,
+) -> Vec<InterfaceDeclaration> {
+    let mut declarations = declarations.to_vec();
+    let mut undeclared_resources = Vec::new();
+    for recorded in resource_methods {
+        let resource_key = recorded.resource.definition_key();
+        let declaration = declarations
+            .iter_mut()
+            .flat_map(|declaration| &mut declaration.declared)
+            .find(|declared| declared.ty.definition_key() == resource_key);
+        match declaration {
+            Some(declaration) => declaration.methods.push(recorded.method.clone()),
+            // One report per resource, however many functions it has.
+            None if undeclared_resources.contains(&recorded.rust_name) => {}
+            None => {
+                undeclared_resources.push(recorded.rust_name);
+                errors.push(SchemaError::UndeclaredResource {
+                    resource: recorded.rust_name,
+                });
+            }
+        }
+    }
+    declarations
 }
 
 fn report_cycles(graph: &TypeGraph, errors: &mut Vec<SchemaError>) {
@@ -629,6 +664,47 @@ impl<'schema> Placement<'schema> {
     fn location(&self, key: TypeKey) -> Option<Location> {
         let owner = self.owners.get(&key)?;
         Some(owner.location)
+    }
+
+    /// Give each placed type the name recorded for it apart from an interface.
+    ///
+    /// A name the owning interface declares itself is kept.
+    fn apply_names(&mut self, names: &'schema [DeclaredName], errors: &mut Vec<SchemaError>) {
+        // 1. Collect the distinct names of each type, in the order given.
+        let mut names_by_type: Vec<(TypeKey, &'static str, Vec<&'schema str>)> = Vec::new();
+        for declared in names {
+            let Some(key) = declared.ty.definition_key() else {
+                errors.push(SchemaError::NamedUndefinedType {
+                    rust_type: declared.rust_name,
+                    name: declared.name.clone(),
+                });
+                continue;
+            };
+            let name = declared.name.as_str();
+            let known_type = names_by_type
+                .iter_mut()
+                .find(|(known_key, _, _)| *known_key == key);
+            match known_type {
+                Some((_, _, given_names)) if given_names.contains(&name) => {}
+                Some((_, _, given_names)) => given_names.push(name),
+                None => names_by_type.push((key, declared.rust_name, vec![name])),
+            }
+        }
+
+        // 2. A type takes its one name. A type the package never reaches has
+        //    no owner and takes none.
+        for (key, rust_type, given_names) in names_by_type {
+            let [name] = given_names.as_slice() else {
+                errors.push(SchemaError::ConflictingNames {
+                    rust_type,
+                    names: given_names.iter().map(|name| format!("`{name}`")).collect(),
+                });
+                continue;
+            };
+            if let Some(owner) = self.owners.get_mut(&key) {
+                owner.declared_name.get_or_insert(name);
+            }
+        }
     }
 }
 

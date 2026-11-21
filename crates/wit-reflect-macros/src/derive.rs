@@ -17,7 +17,7 @@ use syn::{
 use crate::attributes::{
     ComputedField, ContainerAttributes, Errors, FieldAttributes, FieldRule, VariantAttributes,
 };
-use crate::names::{kebab_name, runtime_path, with_docs};
+use crate::names::{kebab_name, public_path, registration, runtime_path, with_docs};
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let mut errors = Errors::default();
@@ -31,6 +31,8 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         Some(remote) => remote_conversion(input, remote, &mut errors),
         None => TokenStream::new(),
     };
+    let registration =
+        interface_registration(input, &container, &runtime, &quote! { define }, &mut errors);
     errors.finish()?;
     let Some(shape) = shape else {
         // Planning reports an error whenever it yields no shape.
@@ -79,7 +81,36 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         #identity_assembly
 
         #remote_conversion
+
+        #registration
     })
+}
+
+/// The registration that declares the type in the interface it names, if it
+/// names one. `declare` is the builder function that takes the type.
+pub(crate) fn interface_registration(
+    input: &DeriveInput,
+    container: &ContainerAttributes,
+    runtime: &Path,
+    declare: &TokenStream,
+    errors: &mut Errors,
+) -> TokenStream {
+    let Some(interface) = &container.interface else {
+        return TokenStream::new();
+    };
+    if !input.generics.params.is_empty() {
+        errors.report(
+            interface,
+            "a generic type has one definition for each instantiation, so it cannot \
+             name an interface; each instantiation is defined where it is used",
+        );
+        return TokenStream::new();
+    }
+    let ident = &input.ident;
+    registration(
+        runtime,
+        &quote! { schema.interface(#interface).#declare::<#ident>(); },
+    )
 }
 
 /// How the derive lets a type cross, from what it can see on the item alone.
@@ -229,16 +260,7 @@ struct CrossingCode {
 /// The path at which the component crate names the type: `path = …` if given,
 /// otherwise the owner crate's root.
 fn owner_path(ident: &Ident, container: &ContainerAttributes) -> TokenStream {
-    match &container.public_path {
-        Some(public_path) => {
-            let written = public_path.to_token_stream().to_string().replace(' ', "");
-            quote! { #written }
-        }
-        None => {
-            let type_name = ident.to_string();
-            quote! { ::core::concat!(::core::env!("CARGO_CRATE_NAME"), "::", #type_name) }
-        }
-    }
+    public_path(container.public_path.as_ref(), ident, None)
 }
 
 /// A boundary value owns its data, so its type has no lifetime parameters.

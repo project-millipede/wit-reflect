@@ -1,6 +1,6 @@
 # Definitions and phases
 
-**Status: Phases 1 to 6 implemented, 2026-11-21. Phase 7 is planned.**
+**Status: Phases 1 to 7 implemented, 2026-11-21.**
 
 The goal is the generation model required by the generator comparison:
 
@@ -413,12 +413,119 @@ Limits:
 - `generate_bindings!` sets `world`; passing `world` again is an error from
   wit-bindgen.
 
-### Phase 7 — Declaring the contract in the Rust sources (planned)
+### Phase 7 — Declaring the contract in the Rust sources (done)
 
-Today a schema function names the interfaces, the exported operations, the
-instantiation names and the world. Phase 7 moves what can be moved to the
-items themselves, so that the Rust sources are the single authority. It has
-no plan yet.
+Each item states its own part of the contract and registers itself. What no
+Rust item can state is read from the component crate's `Cargo.toml`. A
+generator program declares nothing.
+
+- `#[wit(interface = "…")]` on a derived type or resource registers it in that
+  interface.
+- `#[export(interface = "…")]` registers a free function.
+- `#[exports]` on an `impl` block registers the functions marked `#[export]`.
+- `#[named]` on a type alias registers the name of the instantiation.
+- `Schema::from_registry` applies every registration linked into the program,
+  in the order of their source positions.
+- `Schema::name_instantiation` and `Schema::resource_method` accept a
+  declaration before or after the interface it belongs to.
+- `tasks::generate`, `tasks::check` and `tasks::run` read
+  `[package.metadata.wit-reflect]` and write or check the three files. They
+  are behind the `tasks` feature.
+
+The explicit `Schema` builder is unchanged, and the registry is built on it.
+
+| Setting in `Cargo.toml` | Meaning |
+| --- | --- |
+| `package`, `world` | The WIT package and the world's name. |
+| `imports`, `exports` | The world's items. An export may carry its own name. |
+| `wit`, `bindings`, `forwarding` | Output paths; they default to `wit/<world>.wit`, `src/bindings.rs` and `src/forwarding.rs`. |
+| `[[function]]` | A function the component crate implements itself, which therefore cannot register. |
+
+Evidence:
+
+| Test or check | What it establishes |
+| --- | --- |
+| `committed_artifacts_are_what_the_declarations_generate` (`fixtures/session/owner`) | The fixture declares its contract by marks and settings only. Its three committed files did not change by one byte against the files the schema function generated. |
+| `marked_items_declare_the_package_a_schema_program_would` (`crates/wit-reflect/tests/registry.rs`) | Marks and a schema program resolve to the same package, including the paths the forwarding calls. The fixture registers a resource's functions before the resource and a name after its use, marks one function through `cfg_attr`, and leaves one mark's condition false. |
+| `declarations_that_fit_nowhere_are_reported` (same file) | A function of a resource that no interface declares, and a type under two names, are errors and not dropped. |
+
+Verified by hand, not by a retained test:
+
+- The fixture builds for `wasm32-unknown-unknown`. Its dependency tree on that
+  target contains neither `inventory` nor `toml`, and `wasm-tools component new`
+  1.251 packages it with the same world as before.
+- A generator that names nothing from the owner crate collects no
+  registration and fails with the message that says so.
+- A manifest with a missing key, a misspelled key, a value of the wrong type
+  and an incomplete `[[function]]` entry is rejected with all four problems
+  in one report.
+- Two `[[function]]` entries, one returning a resource and one returning a
+  named instantiation, appear in the WIT with their documentation, and the
+  forwarding calls them by the stated path. A result name that no registered
+  type has is reported.
+- `check` on a manifest whose files do not exist names all three as stale and
+  writes nothing; `generate` then creates them with their directories.
+
+Not run: the jco scenario of Phase 6. The generated files are unchanged and
+the owner crate's code on Wasm is the same, so it was not repeated.
+
+#### Spike
+
+An uncommitted spike on a copy of the repository preceded the implementation.
+
+| Check | Result |
+| --- | --- |
+| A registration submitted in one crate is collected in another crate's program, through `inventory` re-exported by this library | passes |
+| Registrations survive when the program uses nothing else of the crate | only if the program names the crate, for example `use owner as _;`; without that the crate is not linked and nothing is collected |
+| A crate reached only through another crate keeps its registrations | passes |
+| A registration at module level reaches a method's reflection by the type's path | passes |
+| The owner crate builds for Wasm with nothing registered | passes |
+
+Run on macOS, debug and release. Linux and Windows are not verified.
+
+Departures from the plan:
+
+- The plan promised a generator of one call. It needs one `use owner as _;`
+  line as well. `Schema::from_registry` fails when nothing is registered, so a
+  missing line cannot yield an empty contract.
+- The plan rendered interfaces in the order of `exports`. They are rendered in
+  the order their first item is registered, which keeps the fixture's files
+  unchanged.
+- Registrations are ordered by package name before file and line. A file path
+  alone differs between machines for a crate outside the workspace.
+- `tasks::run` was added: the `--check` handling every generator would repeat.
+- `Settings` is not public. The tasks are the API; the table is its input.
+
+Limits:
+
+- A marked operation is exported. Forgetting `#[exports]` on a block removes
+  its functions from the contract; the check then reports the committed WIT
+  as stale.
+- The registry holds one contract per program. Two components need two
+  generator programs, or the explicit builder.
+- Definitions follow source position, so moving an item can reorder the WIT
+  without changing its meaning.
+- A registered operation is called at its crate's root, `owner::function` or
+  `owner::Type::function`, unless `path` names another place. A wrong path is
+  a compile error in the component crate.
+- A `[[function]]` entry takes no parameters and names its result by WIT name.
+  Its strings are leaked, once per generator run.
+- `#[exports]` recognizes a mark by its last path segment, `export`, also
+  inside `cfg_attr`. An attribute of another crate with that name would be
+  taken for it.
+- A generic type cannot name an interface, and an alias with parameters cannot
+  be marked.
+
+Examined and not adopted, 2026-11-21:
+
+- **Interfaces named after crates.** The derive knows its crate, so a type
+  could be placed without `interface`. The crate layout would then be part of
+  every type's identity in the contract, helper crates would appear as
+  interfaces, and one crate could not feed two interfaces. The marks stay.
+- **Names composed from type arguments.** `Outcome<StepOutcome<…>>` would need
+  no mark, at the price of names such as
+  `outcome-step-outcome-step-kind-binary-report-inspection-failure`. Rejected:
+  an instantiation is named by a marked alias.
 
 ## Alternatives to the derive, examined and not adopted
 

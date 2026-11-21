@@ -139,6 +139,34 @@ pub enum SchemaError {
         rust_type: &'static str,
     },
 
+    /// Functions are recorded for a resource that no interface declares.
+    ///
+    /// State the resource's interface, with `#[wit(interface = "…")]` on the
+    /// type or with [`InterfaceBuilder::resource`](crate::InterfaceBuilder::resource).
+    #[error("`{resource}` exports functions but no interface of this package declares it")]
+    UndeclaredResource {
+        /// The resource's Rust type.
+        resource: &'static str,
+    },
+
+    /// One type is given several names.
+    #[error("`{rust_type}` is named {}; a type has one name", .names.join(" and "))]
+    ConflictingNames {
+        /// The Rust type named more than once.
+        rust_type: &'static str,
+        /// The names, quoted, in the order they were given.
+        names: Vec<String>,
+    },
+
+    /// A name is given to a type without a definition, such as `Vec<u8>`.
+    #[error("`{rust_type}` cannot be named `{name}`: it is not a named type")]
+    NamedUndefinedType {
+        /// The Rust type the name was given to.
+        rust_type: &'static str,
+        /// The name it cannot take.
+        name: String,
+    },
+
     /// A world item or external interface is not `namespace:package/interface`.
     #[error("`{path}` is not a valid interface path because {reason}")]
     InvalidInterfacePath {

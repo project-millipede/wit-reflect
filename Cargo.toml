@@ -18,11 +18,13 @@ publish = false
 # workspace that pins the same crate to another patch release.
 [workspace.dependencies]
 heck = "0.5"
+inventory = "0.3"
 proc-macro2 = "1"
 quote = "1"
 semver = "1"
 syn = { version = "3", features = ["full"] }
 thiserror = "2"
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 wit-parser = "0.261"
 wit-reflect = { path = "crates/wit-reflect" }
 wit-reflect-macros = { path = "crates/wit-reflect-macros" }

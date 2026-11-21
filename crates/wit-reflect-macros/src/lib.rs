@@ -9,7 +9,9 @@
 mod attributes;
 mod derive;
 mod export;
+mod exports;
 mod from_parts;
+mod named;
 mod names;
 mod operation;
 mod resource;
@@ -57,6 +59,38 @@ pub fn export(arguments: TokenStream, item: TokenStream) -> TokenStream {
     match expansion {
         Ok(tokens) => tokens.into(),
         // Keep the function itself, so the only errors are the reported ones.
+        Err(error) => {
+            let compile_error = error.into_compile_error();
+            quote::quote! { #item #compile_error }.into()
+        }
+    }
+}
+
+/// Registers the functions of an `impl` block that are marked with
+/// `#[export]`. See the re-export in `wit-reflect`.
+#[proc_macro_attribute]
+pub fn exports(arguments: TokenStream, item: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(item);
+    let expansion = exports::expand(arguments.into(), &item);
+    match expansion {
+        Ok(tokens) => tokens.into(),
+        // Keep the block itself, so the only errors are the reported ones.
+        Err(error) => {
+            let compile_error = error.into_compile_error();
+            quote::quote! { #item #compile_error }.into()
+        }
+    }
+}
+
+/// Registers the name of the type a type alias stands for. See the re-export
+/// in `wit-reflect`.
+#[proc_macro_attribute]
+pub fn named(arguments: TokenStream, item: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(item);
+    let expansion = named::expand(arguments.into(), &item);
+    match expansion {
+        Ok(tokens) => tokens.into(),
+        // Keep the alias itself, so the only errors are the reported ones.
         Err(error) => {
             let compile_error = error.into_compile_error();
             quote::quote! { #item #compile_error }.into()
