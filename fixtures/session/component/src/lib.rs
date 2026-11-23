@@ -1,12 +1,15 @@
 //! Fixture: a WebAssembly component without handwritten boundary code.
 //!
-//! Everything this crate adds to `session-owner` is generated:
+//! The boundary this crate adds to `session-owner` is generated:
 //!
 //! - `wit/session.wit`, the contract;
 //! - `src/bindings.rs`, the contract's part of the `wit_bindgen::generate!` call;
 //! - `src/forwarding.rs`, the implementation of the binding traits.
 //!
 //! The three files are written by `cargo run -p session-owner --bin generate`.
+//!
+//! The one thing written here is the body of `open_session`, which
+//! `session-owner` declares on a trait for the component to implement.
 
 // Defines `generate_bindings!`, which knows the world, the types that cross
 // unchanged and the derive that forwarding needs.
@@ -23,6 +26,15 @@ mod forwarding;
 use forwarding::Component;
 
 export!(Component);
+
+// The one function the owner crate declares and this crate implements.
+impl session_owner::SessionSource for Component {
+    fn open_session(resource: &str) -> session_owner::Session {
+        let mut session = session_owner::create_session();
+        session.select(resource);
+        session
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -9,8 +9,8 @@ use quote::quote;
 use syn::meta::ParseNestedMeta;
 use syn::parse::Parser;
 use syn::{
-    FnArg, GenericParam, ImplItemFn, LitStr, Pat, PatType, Path, ReceiverKind, ReturnType, Safety,
-    Signature, Type,
+    Attribute, FnArg, GenericParam, ImplItemFn, LitStr, Pat, PatType, Path, ReceiverKind,
+    ReturnType, Safety, Signature, Type,
 };
 
 use crate::attributes::Errors;
@@ -337,5 +337,25 @@ fn reflect_result(signature: &Signature, runtime: &Path, errors: &mut Errors) ->
             TokenStream::new()
         }
         owned_type => quote! { <#owned_type as #runtime::WitType>::wit_type(graph) },
+    }
+}
+
+/// The expression that reflects a function without a receiver: its WIT name,
+/// parameters, result and documentation.
+///
+/// A signature that cannot be exported is reported at the function.
+pub(crate) fn reflected_function(
+    signature: &Signature,
+    attributes: &[Attribute],
+    runtime: &Path,
+    errors: &mut Errors,
+) -> TokenStream {
+    reject_unsupported_qualifiers(signature, errors);
+    let params = reflect_params(signature, runtime, errors);
+    let result = reflect_result(signature, runtime, errors);
+    let name = kebab_name(&signature.ident, None);
+    let docs = with_docs(attributes);
+    quote! {
+        #runtime::Function::new(#name, ::std::vec![#(#params),*], #result) #docs
     }
 }

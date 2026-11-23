@@ -68,8 +68,8 @@ pub fn export(arguments: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// Registers the functions of an `impl` block that are marked with
-/// `#[export]`. See the re-export in `wit-reflect`.
+/// Registers the exported functions of an `impl` block or of a trait. See the
+/// re-export in `wit-reflect`.
 #[proc_macro_attribute]
 pub fn exports(arguments: TokenStream, item: TokenStream) -> TokenStream {
     let item = proc_macro2::TokenStream::from(item);

@@ -11,6 +11,11 @@ impl crate::exports::native::Guest for Component {
         let created = session_owner::create_session();
         crate::exports::native::Session::new(::wit_reflect::component::ResourceCell::new(created))
     }
+
+    fn open_session(resource: ::std::string::String) -> crate::exports::native::Session {
+        let created = <Component as session_owner::SessionSource>::open_session(&resource);
+        crate::exports::native::Session::new(::wit_reflect::component::ResourceCell::new(created))
+    }
 }
 
 impl crate::exports::native::GuestSession for ::wit_reflect::component::ResourceCell<session_owner::Session> {

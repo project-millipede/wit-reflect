@@ -368,3 +368,12 @@ pub fn create_session() -> Session {
         last_step: None,
     }
 }
+
+/// What the component's environment supplies.
+// The component crate implements this trait for the `Component` type of its
+// generated forwarding. Nothing about the function is stated anywhere else.
+#[exports(interface = "native", open_session)]
+pub trait SessionSource {
+    /// Create a session with `resource` selected.
+    fn open_session(resource: &str) -> Session;
+}

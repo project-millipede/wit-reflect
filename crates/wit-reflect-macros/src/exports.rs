@@ -1,4 +1,4 @@
-//! Expansion of `#[exports]` on an `impl` block.
+//! Expansion of `#[exports]` on an `impl` block or on a trait.
 //!
 //! `#[export]` on a method cannot register the method. A registration is an
 //! item of its own, and an attribute on a method can only add associated
@@ -8,14 +8,21 @@
 //! A function is exported when the attribute lists its name or the function
 //! carries `#[export]` itself. A listed function is given that mark here, so
 //! both forms are reflected and checked by the same code.
+//!
+//! On a trait the attribute registers functions of an interface that the
+//! component crate implements.
 
 use proc_macro2::{TokenStream, TokenTree};
 use quote::{ToTokens, quote};
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Ident, ImplItem, ImplItemFn, ItemImpl, Meta, Path, Token, Type, parse_quote};
+use syn::{
+    Attribute, Ident, ImplItem, ImplItemFn, Item, ItemImpl, ItemTrait, LitStr, Meta, Path, Token,
+    TraitItem, Type, parse_quote,
+};
 
 use crate::attributes::Errors;
+use crate::export::reflected_function;
 use crate::names::{companion_ident, public_path, registration, runtime_path};
 
 /// `#[exports(...)]` arguments.
@@ -23,6 +30,8 @@ use crate::names::{companion_ident, public_path, registration, runtime_path};
 struct ExportsOptions {
     /// The functions named in the attribute, in the order written.
     listed: Vec<Ident>,
+    /// `interface = "…"`: the interface that exports a trait's functions.
+    interface: Option<LitStr>,
     /// `path = …`: where the component crate can name the type.
     public_path: Option<Path>,
     crate_path: Option<Path>,
@@ -39,6 +48,10 @@ impl ExportsOptions {
                 let function = meta.path.require_ident()?.clone();
                 options.listed.push(function);
                 Ok(())
+            } else if meta.path.is_ident("interface") {
+                let interface = meta.value()?.parse()?;
+                options.interface = Some(interface);
+                Ok(())
             } else if meta.path.is_ident("path") {
                 let public_path = meta.value()?.parse()?;
                 options.public_path = Some(public_path);
@@ -48,7 +61,7 @@ impl ExportsOptions {
                 options.crate_path = Some(crate_path);
                 Ok(())
             } else {
-                Err(meta.error("expected `path = …` or `crate = …`"))
+                Err(meta.error("expected `interface = …`, `path = …` or `crate = …`"))
             }
         });
         parser.parse2(arguments)?;
@@ -65,16 +78,37 @@ struct MarkedFunction<'block> {
 
 pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<TokenStream> {
     let options = ExportsOptions::parse(arguments)?;
-    let mut block: ItemImpl = syn::parse2(item.clone())?;
     let runtime = runtime_path(options.crate_path.as_ref());
+    match syn::parse2(item.clone())? {
+        Item::Impl(block) => expand_block(&options, block, &runtime),
+        Item::Trait(declaration) => expand_trait(&options, &declaration, &runtime),
+        other => Err(syn::Error::new_spanned(
+            other,
+            "`exports` applies to an `impl` block or to a trait",
+        )),
+    }
+}
 
+/// The functions of a resource: those of an inherent `impl` block.
+fn expand_block(
+    options: &ExportsOptions,
+    mut block: ItemImpl,
+    runtime: &Path,
+) -> syn::Result<TokenStream> {
     let mut errors = Errors::default();
-    mark_listed_functions(&mut block, &options, &runtime, &mut errors);
+    mark_listed_functions(&mut block, options, runtime, &mut errors);
+    if let Some(interface) = &options.interface {
+        errors.report(
+            interface,
+            "`interface` applies to a trait; a resource's functions are exported from \
+             the resource's interface",
+        );
+    }
     if let Some((trait_path, _)) = &block.trait_ {
         errors.report(
             trait_path,
-            "`exports` applies to an inherent `impl` block; \
-             a trait's functions are not exported",
+            "`exports` applies to an inherent `impl` block or to the declaration of a \
+             trait, not to an implementation of one",
         );
     }
     if !block.generics.params.is_empty() {
@@ -118,11 +152,93 @@ pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<
             );
         }
     });
-    let registration = registration(&runtime, &quote! { #(#declarations)* });
+    let registration = registration(runtime, &quote! { #(#declarations)* });
     Ok(quote! {
         #block
 
         #registration
+    })
+}
+
+/// The functions a component crate implements: those of a trait.
+///
+/// The owner crate declares the functions and the component crate implements
+/// the trait for the `Component` type of its generated forwarding file. Each
+/// listed function is exported from `interface` and called through the trait.
+fn expand_trait(
+    options: &ExportsOptions,
+    declaration: &ItemTrait,
+    runtime: &Path,
+) -> syn::Result<TokenStream> {
+    let mut errors = Errors::default();
+    if options.interface.is_none() {
+        errors.report(
+            &declaration.ident,
+            "state the interface that exports this trait's functions: \
+             `exports(interface = \"…\", …)`",
+        );
+    }
+    if !declaration.generics.params.is_empty() {
+        errors.report(
+            &declaration.generics,
+            "a generic trait has no single set of functions to export",
+        );
+    }
+    if options.listed.is_empty() {
+        errors.report(
+            &declaration.ident,
+            "this trait exports nothing; list its exported functions in `exports(…)`",
+        );
+    }
+
+    let interface = options.interface.as_ref();
+    let trait_path = public_path(options.public_path.as_ref(), &declaration.ident, None);
+    let mut companions = Vec::new();
+    let mut declarations = Vec::new();
+    for listed in &options.listed {
+        let function = declaration.items.iter().find_map(|item| match item {
+            TraitItem::Fn(function) if function.sig.ident == *listed => Some(function),
+            _ => None,
+        });
+        let Some(function) = function else {
+            errors.report(listed, "this trait has no function of that name");
+            continue;
+        };
+        if let Some(receiver) = function.sig.receiver() {
+            errors.report(
+                receiver,
+                "an exported function of a trait takes no `self`: the component implements \
+                 the trait for the `Component` type of its generated forwarding",
+            );
+            continue;
+        }
+        let reflected = reflected_function(&function.sig, &function.attrs, runtime, &mut errors);
+        let companion = companion_ident(listed);
+        let function_suffix = format!(">::{listed}");
+        companions.push(quote! {
+            #[allow(dead_code)]
+            fn #companion(graph: &mut #runtime::TypeGraph) -> #runtime::Function {
+                #reflected
+            }
+        });
+        declarations.push(quote! {
+            schema.interface(#interface).function(#runtime::Operation::new(
+                #companion,
+                ::core::concat!("<Component as ", #trait_path, #function_suffix),
+            ));
+        });
+    }
+    errors.finish()?;
+
+    let registration = registration(runtime, &quote! { #(#declarations)* });
+    Ok(quote! {
+        #declaration
+
+        const _: () = {
+            #(#companions)*
+
+            #registration
+        };
     })
 }
 

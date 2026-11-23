@@ -108,6 +108,9 @@ interface native {
 
   /// Create a session without a selection.
   create-session: func() -> own<session>;
+
+  /// Create a session with `resource` selected.
+  open-session: func(%resource: string) -> own<session>;
 }
 
 world session {

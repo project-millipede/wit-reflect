@@ -12,7 +12,10 @@ extern crate self as registry;
 
 use std::error::Error;
 
-use wit_reflect::{Schema, SchemaError, WitResource, WitType, export, exports, named, operation};
+use wit_reflect::{
+    Function, Operation, Param, Schema, SchemaError, Type, TypeGraph, WitResource, WitType, export,
+    exports, named, operation,
+};
 
 // No mark states the interface of `Session`. It belongs to `native`, whose
 // function `create_session` returns it.
@@ -69,6 +72,30 @@ fn create_session() -> Session {
     Session { selection: None }
 }
 
+// A function only a component can implement: the component implements the
+// trait for the `Component` type of its generated forwarding.
+#[exports(interface = "native", restore_session)]
+trait SessionSource {
+    /// Restore the session stored under `name`.
+    fn restore_session(name: &str) -> Session;
+
+    // Not listed.
+    fn forget_session(name: &str);
+}
+
+/// What the mark on `SessionSource` reflects, written out by hand.
+fn restore_session_signature(graph: &mut TypeGraph) -> Function {
+    Function::new(
+        "restore-session",
+        vec![Param::by_reference(
+            "name",
+            Type::borrowed(<str as WitType>::wit_type(graph)),
+        )],
+        <Session as WitType>::wit_type(graph),
+    )
+    .with_docs("Restore the session stored under `name`.")
+}
+
 // Neither is part of the registered contract: they carry no registering mark.
 #[derive(WitResource)]
 struct Orphan {
@@ -85,6 +112,8 @@ impl Orphan {
 /// The registry is how a contract is declared without a schema program. It
 /// must yield exactly the package the same declarations give when a schema
 /// lists them: an operation it dropped would silently leave the contract.
+/// That includes a resource placed by the function that returns it, and a
+/// trait's function with the path through which the forwarding calls it.
 #[test]
 fn marked_items_declare_the_package_a_schema_program_would() -> Result<(), Box<dyn Error>> {
     let mut listed = Schema::new("example:session@0.1.0".parse()?);
@@ -97,7 +126,11 @@ fn marked_items_declare_the_package_a_schema_program_would() -> Result<(), Box<d
     listed
         .interface("native")
         .define_as::<ReportOutcome>("report-outcome")
-        .function(operation!(registry::create_session));
+        .function(operation!(registry::create_session))
+        .function(Operation::new(
+            restore_session_signature,
+            "<Component as registry::SessionSource>::restore_session",
+        ));
 
     let registered = Schema::from_registry("example:session@0.1.0".parse()?)?;
 
