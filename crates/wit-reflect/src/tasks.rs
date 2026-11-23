@@ -39,6 +39,7 @@
 //! | `exports` | Interfaces of this package the world exports. A table also gives the export its own name. |
 //! | `wit`, `bindings`, `forwarding` | Output paths below the manifest's directory. They default to `wit/<world>.wit`, `src/bindings.rs` and `src/forwarding.rs`. |
 //! | `function` | A function the component crate implements itself. |
+//! | `representations` | Not read here: the crate's representation map, which the derive reads. |
 //!
 //! A `function` entry exists because the component crate cannot register
 //! anything: it compiles only once its generated files exist. The entry gives

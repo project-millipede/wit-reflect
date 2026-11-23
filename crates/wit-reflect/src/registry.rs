@@ -6,7 +6,7 @@
 //! | --- | --- |
 //! | `#[wit(interface = "…")]` on a derived type or resource | the type in that interface |
 //! | `#[export(interface = "…")]` on a free function | the function in that interface |
-//! | `#[exports]` on an `impl` block | every function of the block marked `#[export]` |
+//! | `#[exports(a, b)]` on an `impl` block | the named functions of the block, and those marked `#[export]` |
 //! | `#[named]` on a type alias | the name of the aliased instantiation |
 //!
 //! Each mark submits a [`Registration`]. The registrations of every crate

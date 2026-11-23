@@ -157,7 +157,7 @@ impl Passage for Converted {
     label = "the binding type and the owner type disagree here",
     note = "they differ in field order, count or type, or the bindings define a type of their \
             own where the owner type crosses unchanged; regenerate the WIT, bindings and \
-            forwarding files from the schema, then rebuild"
+            forwarding files, then rebuild"
 )]
 pub trait FromParts<Parts>: Sized {
     /// Build the value from parts in declaration order.

@@ -1,8 +1,9 @@
 # Developer guide
 
 What you write, what wit-reflect generates from it, and what it leaves to you.
-Every example is quoted from the `fixtures/session` crates, so it compiles and
-the output shown is the committed output.
+The worked example is taken from the `fixtures/session` crates, so it compiles
+and the output shown is the committed output. Code is shortened where a comment
+says so.
 
 ## The idea
 
@@ -12,9 +13,9 @@ states its own part of the contract, and you run a generator.
 | You write | wit-reflect generates | Other tools generate |
 | --- | --- | --- |
 | Rust types and functions, as today | The WIT file | Rust bindings, by wit-bindgen from that WIT |
-| `#[derive(WitType)]`, `#[export]` and rules on them | The bindings file: the contract's part of the `wit_bindgen::generate!` call | TypeScript bindings, by jco from the component |
-| The package and world, in `Cargo.toml` | The forwarding file: the `impl Guest` blocks for those bindings | |
-| | The conversion of every result, inside your derive | |
+| A derive on each type, and a mark where an item has to state its part | The bindings file: the contract's part of the `wit_bindgen::generate!` call | TypeScript bindings, by jco from the component |
+| One map for the types of other crates | The forwarding file: the `impl Guest` blocks for those bindings | |
+| The package and world, in `Cargo.toml` | The conversion of every result, inside your derive | |
 
 There is no second data model. A field exists in one place: the Rust type.
 
@@ -376,6 +377,9 @@ call by call, for example to generate two contracts from the same crates.
 | `schema.external_interface(path).define::<T>()` | A dependency already defines `T` | `use path.{t};` where it is referenced; never defined here |
 | `schema.world("w").import(t).export(t)` | A world's imports and exports | `world w { … }` |
 | `.export_as("label", t)` | A named export | `export label: t;` |
+| `Schema::from_registry(name)` | Start from everything the marks registered | what the marks declare |
+| `schema.name_instantiation::<T>("name")` | Name `T` wherever it is defined | what `#[named]` registers |
+| `schema.resource_method::<R>(operation!(R::f))` | Export a function of `R`, whichever interface declares it | what `#[exports]` registers |
 
 Three rules decide what the declaration cannot leave open:
 
@@ -408,9 +412,13 @@ function replace the default.
 
 ## Rules
 
+A rule states a representation that differs from what is stored. Most fields
+need none: a type of another crate is covered by the crate's map, and `usize`
+is widened by itself. A rule is for one field, or for the type as a whole.
+
 | Rule | The field becomes | Checked by the compiler |
 | --- | --- | --- |
-| `#[wit(display)]` | `string`, from `to_string()` | the type is `Display` |
+| `#[wit(display)]` | `string`, from `to_string()`; the same as `into = DisplayText` | the type is `Display` |
 | `#[wit(widen)]` | `u64` for `usize`, `s64` for `isize` | only those two types; optional, they are widened without it |
 | `#[wit(into = W)]` | `W`, from `W::from(field)` | `W: From<FieldType>` |
 | `#[wit(into = W, with = f)]` | `W`, from `f(&self)` | `f: fn(&Self) -> W` |
@@ -454,9 +462,9 @@ Three limits of the map:
 
 | Generated | By | When |
 | --- | --- | --- |
-| The WIT file | `ResolvedPackage: Display` | when you run the generator |
-| The bindings file | `ResolvedPackage::bindings` | when you run the generator |
-| The forwarding file | `ResolvedPackage::forwarding` | when you run the generator |
+| The WIT file | `wit_reflect::tasks` | when you run the generator |
+| The bindings file | `wit_reflect::tasks` | when you run the generator |
+| The forwarding file | `wit_reflect::tasks` | when you run the generator |
 | The decision which types cross unchanged | `#[derive(WitType)]` and the compiler | when the owner crate compiles |
 | The conversion of each result | `#[derive(WitType)]` | when the owner crate compiles |
 | The assembly of each binding value | `#[derive(FromParts)]`, attached by wit-bindgen | when the component crate compiles |
@@ -481,7 +489,8 @@ Three limits of the map:
 | --- | --- |
 | A record, variant or enum as a parameter | error when the forwarding file is generated |
 | A resource handle nested in a result | error when the forwarding file is generated |
-| `async fn`, `unsafe fn`, generic functions, `impl Trait`, `&mut` parameters, consuming `self` | compile error at the function |
+| `async fn`, `unsafe fn`, generic functions, `impl Trait`, `&mut` parameters, `usize` parameters, consuming `self` | compile error at the function |
+| A foreign field inside a generic struct | the map does not reach it; the field takes a rule |
 | A type that contains itself | compile error at the field |
 | One WIT function backed by anything but exactly one Rust function | write an ordinary Rust function for it first |
 | Checking a type placed in an external interface against that interface's WIT | not checked; a mismatch appears when the bindings compile |
@@ -492,10 +501,10 @@ Three limits of the map:
 
 **Wire parts are the neutral in-between form of a Rust value on its way to the
 bindings: the value taken apart field by field, in declaration order, with
-every rule already applied, using only plain Rust types.**
+every rule and map entry already applied, using only plain Rust types.**
 
 They exist because two crates each know half of the picture. The owner crate
-knows the real type, its private fields and its rules, but cannot name
+knows the real type, its private fields, its rules and its map, but cannot name
 wit-bindgen's types, which are generated later in the component crate. The
 component crate has those types but cannot read private fields or know the
 rules. Wire parts are what is handed across.
@@ -503,13 +512,12 @@ rules. Wire parts are what is handed across.
 ### A record
 
 ```rust
+// Three of the fixture's six fields.
 #[derive(WitType)]
 pub struct Image {
-    #[wit(display)]
-    pub minimum_os: Version,    // exported as text
-    pub file_range: FileRange,  // private fields `offset`, `size`
-    #[wit(widen)]
-    pub read_count: usize,      // exported as u64
+    pub minimum_os: foreign::Version,  // the map shows it as text
+    pub file_range: FileRange,         // private fields `offset`, `size`
+    pub read_count: usize,             // shown as u64
 }
 ```
 
@@ -518,14 +526,14 @@ the wire parts are:
 
 ```rust
 Fields((
-    "14.4".to_string(),               // display applied
+    "14.4".to_string(),               // the map's entry applied
     (Fields((0_u64, (4096_u64, ()))), // the nested record, taken apart too
-    (1_u64,                           // widen applied
+    (1_u64,                           // widened
     ()))
 ))
 ```
 
-- The rules are already applied: no `Version` and no `usize` is left.
+- Every representation is already applied: no `Version` and no `usize` is left.
 - Field names are gone. Only the order remains.
 - The shape is a nested pair list, `(a, (b, (c, ())))`, so a record may have
   any number of fields.
@@ -552,7 +560,7 @@ The parts say which case was chosen, by position, with that case's payload.
 pub enum ErrorKind {
     Truncated { requested_size: u64, available_size: u64 },  // case 1
     UnsupportedImage,                                        // case 2
-    Decode(#[wit(display)] DecodeError),                     // case 3
+    Decode(foreign::DecodeError),                            // case 3, text by the map
 }
 ```
 
@@ -579,6 +587,7 @@ A struct or enum crosses unchanged when all of this holds:
 | It is `pub` and has no type parameters | The component crate must name it, and `with` accepts no generic arguments |
 | It is `Clone` and `Debug` | The bindings clone and print the values they hold |
 | No rule, computed field, `transparent`, `remote` or `name` on a member | The binding would differ in shape, value or name |
+| No field is a `usize`, or a type the map shows as another type | The binding holds the shown type, not the stored one |
 | A struct has only `pub` fields | The bindings read the fields directly |
 | An enum has only unit cases without explicit discriminants | The bindings lower an enum by its discriminant |
 | Every type inside it crosses unchanged | A binding field has exactly one type |
@@ -592,7 +601,7 @@ is converted through wire parts. Both kinds mix freely:
 | `StepKind`, `Progress`, `MachoValue` | unchanged | every condition holds |
 | `FailureKind` | converted | it is not `Clone` |
 | `FileRange` | converted | its fields are private |
-| `Report` | converted | it holds `Image`, which has rules |
+| `Report` | converted | it holds `Image`, whose fields are shown as other types |
 | `StepOutcome<StepKind, …>` | converted | it is generic; the `StepKind` inside still crosses unchanged |
 
 Two attributes on the type adjust the decision:
@@ -628,6 +637,16 @@ At compile time, at the declaration:
 ```text
 error[E0277]: `std::time::Duration` has no WIT representation
    = note: derive `wit_reflect::WitType` on the struct or enum that owns this data
+   = note: for a type of another crate, put a rule on the field or add the type to the
+           crate's `wit_reflect::representations!` map
+
+error[E0277]: the trait bound `MachoValue: From<Platform>` is not satisfied
+              (at the entry `Platform => MachoValue` of the map)
+
+error: this type's path starts with `std`, but the entry stands in the group `object`
+
+error: this block has no function of that name
+       (at a name in `#[exports(…)]`)
 
 error: this field contains the type it belongs to; a WIT type cannot be recursive
 
@@ -659,7 +678,7 @@ When a committed contract no longer matches the Rust types:
 error[E0277]: `u32` cannot be assembled from the wire parts `std::string::String`
    = note: they differ in field order, count or type, or the bindings define a type of their
            own where the owner type crosses unchanged; regenerate the WIT, bindings and
-           forwarding files from the schema, then rebuild
+           forwarding files, then rebuild
 ```
 
 ## Checklist for a new contract

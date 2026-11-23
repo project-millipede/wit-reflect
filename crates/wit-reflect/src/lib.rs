@@ -1,8 +1,230 @@
-//! Reflect ordinary Rust types into validated WIT packages.
+//! Generate a WIT contract, and the code behind it, from ordinary Rust.
 //!
-//! The types an implementation already uses are the only definition of its
-//! data. Deriving [`WitType`] on them lets a small generator program describe a
-//! WIT package without restating a single field:
+//! The types and functions an implementation already has are the only
+//! definition of its contract. Nothing restates a field or a signature: each
+//! item carries a derive or a mark, and a generator writes the WIT file, the
+//! bindings setup and the forwarding code from them.
+//!
+//! # In short
+//!
+//! In the crate that owns the types and operations:
+//!
+//! ```text
+//! #[derive(WitType)]
+//! #[wit(interface = "binary")]             // an interface has to own this type
+//! pub struct Report {
+//!     pub byte_length: u64,
+//!     pub images: Vec<Image>,              // `Image` is found through this field
+//! }
+//!
+//! #[wit_reflect::named]                    // names one instantiation of a generic type
+//! pub type InspectionOutcome = Outcome<Report>;
+//!
+//! #[derive(WitResource)]
+//! #[wit(interface = "native")]
+//! pub struct Session { /* fields are not exported */ }
+//!
+//! #[wit_reflect::exports(inspect)]         // the exported functions of this block
+//! impl Session {
+//!     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
+//! }
+//! ```
+//!
+//! In the `Cargo.toml` of the component crate:
+//!
+//! ```toml
+//! [package.metadata.wit-reflect]
+//! package = "example:session@0.1.0"
+//! world = "session"
+//! exports = ["native", "binary"]
+//! ```
+//!
+//! The whole generator program:
+//!
+//! ```text
+//! use owner_crate as _;   // links the crate whose items are marked
+//!
+//! fn main() -> std::process::ExitCode {
+//!     wit_reflect::tasks::run("crates/component/Cargo.toml")
+//! }
+//! ```
+//!
+//! It writes `wit/session.wit`, `src/bindings.rs` and `src/forwarding.rs` into
+//! the component crate; with `--check` it changes nothing and fails if one of
+//! them is stale.
+//!
+//! # What you write
+//!
+//! | You write | On | It states |
+//! | --- | --- | --- |
+//! | [`#[derive(WitType)]`](macro@WitType) | a struct or enum | the type is part of the contract |
+//! | [`#[derive(WitResource)]`](macro@WitResource) | a struct | the type is a resource |
+//! | `#[wit(interface = "…")]` | a derived type or resource | the interface that owns it |
+//! | [`#[exports(a, b)]`](macro@exports) | an `impl` block | the functions of the block that are exported |
+//! | [`#[export(interface = "…")]`](macro@export) | a free function | the interface that exports it |
+//! | [`#[named]`](macro@named) | a type alias | the name of that instantiation of a generic type |
+//! | [`representations!`](macro@representations) | once in a crate | how each type of another crate is shown |
+//! | a rule such as `#[wit(skip(…))]` | a type or a field | a representation that differs from what is stored |
+//! | `[package.metadata.wit-reflect]` | the component crate's `Cargo.toml` | package, world, imports and exports |
+//!
+//! What is exported is always stated. It never follows from `pub`, from the
+//! layout of an `impl` block or from the crate a type is in.
+//!
+//! # How types are found
+//!
+//! The derive runs in the crate that owns a type and reflects its fields as
+//! declared. By then the Rust compiler has resolved aliases, re-exports,
+//! dependency crates and generic arguments, so this crate never resolves a
+//! Rust path itself. Each instantiation of a generic type is a separate
+//! definition, identified by its Rust type rather than by its WIT name.
+//!
+//! Only a type an interface has to own names its interface. Every type it
+//! refers to is found through it and belongs to the only interface that
+//! reaches it.
+//!
+//! # How the marks become a contract
+//!
+//! Each mark registers its item when the program is linked.
+//! [`Schema::from_registry`] collects the registrations of every linked crate
+//! into a [`Schema`]; the [`registry`] module explains the linking. With the
+//! `tasks` feature, the `tasks` module adds the settings from the component
+//! crate's `Cargo.toml` and writes or checks the generated files.
+//! [`Schema::resolve`] assigns each type one owning interface and one name,
+//! validates the result, and reports every problem in one [`SchemaErrors`].
+//!
+//! # Types of other crates
+//!
+//! No derive can be placed on a dependency's type. A crate states once how
+//! each such type is shown, and fields of those types then need no rule:
+//!
+//! ```text
+//! wit_reflect::representations! {
+//!     pub(crate) Representations {
+//!         object {
+//!             object::Endianness => Endianness,         // a local enum, checked by `remote`
+//!             object::macho::FileType => MachoValue,    // a local record
+//!             object::macho::Version => DisplayText,    // its `Display` text
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! The crate names the map in its own `Cargo.toml`
+//! (`representations = "crate::Representations"`, with the `representations`
+//! feature); see [`representations!`](macro@representations). `usize` and
+//! `isize` need neither an entry nor a rule: they are shown as `u64` and
+//! `s64`.
+//!
+//! # Rules
+//!
+//! A rule states a representation that differs from what is stored, for one
+//! field or for the type. It never restates a field of the owner type.
+//!
+#![cfg_attr(feature = "derive", doc = "```")]
+#![cfg_attr(not(feature = "derive"), doc = "```ignore")]
+//! use std::fmt;
+//! use wit_reflect::{Schema, WitType};
+//!
+//! #[derive(WitType)]
+//! #[wit(display = "message", skip(attempts))]
+//! struct ReadFailure {
+//!     requested: usize,
+//!     #[wit(display)]
+//!     cause: std::io::Error,
+//!     attempts: u8,
+//! }
+//!
+//! impl fmt::Display for ReadFailure {
+//!     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+//!         write!(formatter, "cannot read {} bytes: {}", self.requested, self.cause)
+//!     }
+//! }
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut schema = Schema::new("example:files@0.1.0".parse()?);
+//! schema.interface("reading").define::<ReadFailure>();
+//!
+//! let package = schema.resolve()?;
+//! let expected_wit = "\
+//! package example:files@0.1.0;
+//!
+//! interface reading {
+//!   record read-failure {
+//!     message: string,
+//!     requested: u64,
+//!     cause: string,
+//!   }
+//! }
+//! ";
+//! assert_eq!(package.to_string(), expected_wit);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `display = "message"` adds a field with the value's `Display` text, because
+//! a method cannot cross a boundary. `skip(attempts)` keeps a field out of the
+//! contract. `#[wit(display)]` shows one field as its text. The rules are
+//! listed with the [`WitType`](macro@WitType) derive.
+//!
+//! # Building a component
+//!
+//! The derive also implements [`lower::Lower`], which hands a value to the
+//! bindings with its rules applied. Next to the WIT file, the generator writes
+//! two Rust files:
+//!
+//! - [`ResolvedPackage::bindings`]: the contract's part of the
+//!   `wit_bindgen::generate!` call, as the macro `generate_bindings!`;
+//! - [`ResolvedPackage::forwarding`]: the implementation of the traits
+//!   wit-bindgen generates, which calls the exported operations and assembles
+//!   their results.
+//!
+//! A component crate then holds no handwritten boundary code:
+//!
+//! ```text
+//! include!("bindings.rs");
+//! generate_bindings! { path: "wit" }
+//!
+//! #[rustfmt::skip]
+//! mod forwarding;
+//! use forwarding::Component;
+//!
+//! export!(Component);
+//! ```
+//!
+//! The three files are generated artifacts. Commit them and run the check in
+//! your tests; the `fixtures/session` crates in the repository show the
+//! arrangement.
+//!
+//! # Types that cross unchanged
+//!
+//! Most results are converted: taken apart in the owner crate and assembled
+//! into the type wit-bindgen generates. A type needs no conversion when the
+//! bindings can use it as it is. The bindings file then maps its WIT type to
+//! the owner type with wit-bindgen's `with` option, and its values are moved.
+//!
+//! A struct or enum crosses unchanged when all of this holds:
+//!
+//! - it is `pub`, has no type parameters and is `Clone` and `Debug`;
+//! - no `#[wit(...)]` attribute changes its shape, a value or a member's name;
+//! - a struct has only `pub` fields; an enum has only unit cases without
+//!   explicit discriminants;
+//! - no field is a `usize`, an `isize` or a type the crate's map shows as
+//!   another type;
+//! - every type inside it crosses unchanged too.
+//!
+//! Nothing has to be declared. The derive checks what it can see on the item,
+//! and the compiler decides the rest from the field types, so a type that
+//! does not qualify is simply converted. `#[wit(convert)]` forces conversion.
+//!
+//! The mapping names the type at the root of its crate, `owner::Type`. A type
+//! exported elsewhere declares `#[wit(path = owner::module::Type)]`; a path
+//! that does not resolve is a compile error in the component crate.
+//!
+//! # Declaring with a schema program
+//!
+//! The marks are a front end to [`Schema`]. A program can also declare a
+//! contract call by call, for example to generate two contracts from the same
+//! crates. Types need only the derive:
 //!
 #![cfg_attr(feature = "derive", doc = "```")]
 #![cfg_attr(not(feature = "derive"), doc = "```ignore")]
@@ -46,26 +268,8 @@
 //! # }
 //! ```
 //!
-//! # How types are found
-//!
-//! The derive runs in the crate that owns a type and reflects its fields as
-//! declared. By then the Rust compiler has resolved aliases, re-exports,
-//! dependency crates and generic arguments, so this crate never resolves a
-//! Rust path itself. Each instantiation of a generic type is a separate
-//! definition, identified by its Rust type rather than by its WIT name.
-//!
-//! # Declaring a package
-//!
-//! A [`Schema`] names the interfaces and the types each one defines. Everything
-//! those types refer to is discovered automatically. [`Schema::resolve`]
-//! assigns each type one owning interface and one name, validates the result,
-//! and reports every problem it finds in one [`SchemaErrors`].
-//!
-//! # Operations
-//!
-//! Functions and methods are marked where they are declared and selected where
-//! the contract is declared. Marking reflects the real signature; nothing is
-//! exported until a schema lists it.
+//! Operations are marked with [`macro@export`], which reflects the signature,
+//! and listed with [`operation!`](macro@operation):
 //!
 #![cfg_attr(feature = "derive", doc = "```")]
 #![cfg_attr(not(feature = "derive"), doc = "```ignore")]
@@ -119,154 +323,46 @@
 //! ```
 //!
 //! [`Schema::external_interface`] places types that a dependency package
-//! already defines, so they are imported instead of redefined.
+//! already defines, so they are imported instead of redefined. Only a schema
+//! program can do that.
 //!
-//! # Declaring on the items
+//! # Features
 //!
-//! A schema program is not required. Each item can state its own part of the
-//! contract, and the marks register themselves when the program is linked:
+//! | Feature | Default | Enables |
+//! | --- | --- | --- |
+//! | `derive` | yes | the derives and the other macros |
+//! | `tasks` | no | the `tasks` module: read the contract settings, write or check the generated files. For a generator program. |
+//! | `representations` | no | reading the crate's map from its `Cargo.toml`. For a crate that names a map there. |
 //!
-//! ```text
-//! #[derive(WitResource)]
-//! #[wit(interface = "native")]
-//! pub struct Session { /* … */ }
-//!
-//! #[wit_reflect::exports]
-//! impl Session {
-//!     #[export]
-//!     pub fn select(&mut self, resource: &str) { /* … */ }
-//! }
-//!
-//! #[export(interface = "native")]
-//! pub fn create_session() -> Session { /* … */ }
-//! ```
-//!
-//! [`Schema::from_registry`] builds the schema above from these marks. The
-//! [`registry`] module lists them and explains how the declaring crates are
-//! linked. With the `tasks` feature, the `tasks` module reads the package and
-//! world from the component crate's `Cargo.toml` and writes or checks the
-//! generated files, so a generator program is a single call.
-//!
-//! # Representation rules
-//!
-//! Some fields cannot cross a boundary as stored: a dependency's type, a
-//! `usize`, an error cause. A rule on the field names its wire type and how
-//! the value is obtained, without restating any field of the owner type.
-//!
-#![cfg_attr(feature = "derive", doc = "```")]
-#![cfg_attr(not(feature = "derive"), doc = "```ignore")]
-//! use std::fmt;
-//! use wit_reflect::{Schema, WitType};
-//!
-//! #[derive(WitType)]
-//! #[wit(field(name = "message", into = String, with = ToString::to_string))]
-//! struct ReadFailure {
-//!     #[wit(widen)]
-//!     requested: usize,
-//!     #[wit(display)]
-//!     cause: std::io::Error,
-//!     #[wit(skip)]
-//!     attempts: u8,
-//! }
-//!
-//! impl fmt::Display for ReadFailure {
-//!     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-//!         write!(formatter, "cannot read {} bytes: {}", self.requested, self.cause)
-//!     }
-//! }
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut schema = Schema::new("example:files@0.1.0".parse()?);
-//! schema.interface("reading").define::<ReadFailure>();
-//!
-//! let package = schema.resolve()?;
-//! let expected_wit = "\
-//! package example:files@0.1.0;
-//!
-//! interface reading {
-//!   record read-failure {
-//!     message: string,
-//!     requested: u64,
-//!     cause: string,
-//!   }
-//! }
-//! ";
-//! assert_eq!(package.to_string(), expected_wit);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! The rules are listed with the `WitType` derive.
-//!
-//! # Building a component
-//!
-//! The derive also implements [`lower::Lower`], which hands a value to the
-//! bindings with its rules applied. From the same schema that renders the WIT,
-//! two Rust files are rendered:
-//!
-//! - [`ResolvedPackage::bindings`]: the schema's part of the
-//!   `wit_bindgen::generate!` call, as the macro `generate_bindings!`;
-//! - [`ResolvedPackage::forwarding`]: the implementation of the traits
-//!   wit-bindgen generates, which calls the listed operations and assembles
-//!   their results.
-//!
-//! A component crate then holds no handwritten boundary code:
-//!
-//! ```text
-//! include!("bindings.rs");
-//! generate_bindings! { path: "wit" }
-//!
-//! #[rustfmt::skip]
-//! mod forwarding;
-//! use forwarding::Component;
-//!
-//! export!(Component);
-//! ```
-//!
-//! The WIT, the bindings file and the forwarding file are generated artifacts.
-//! Commit them, and keep a check that fails when they differ from what the
-//! schema generates; the `fixtures/session` crates in the repository show the
-//! arrangement.
-//!
-//! # Types that cross unchanged
-//!
-//! Most results are converted: taken apart in the owner crate and assembled
-//! into the type wit-bindgen generates. A type needs no conversion when the
-//! bindings can use it as it is. The bindings file then maps its WIT type to
-//! the owner type with wit-bindgen's `with` option, and its values are moved.
-//!
-//! A struct or enum crosses unchanged when all of this holds:
-//!
-//! - it is `pub`, has no type parameters and is `Clone` and `Debug`;
-//! - no `#[wit(...)]` attribute changes its shape, a value or a member's name;
-//! - a struct has only `pub` fields; an enum has only unit cases without
-//!   explicit discriminants;
-//! - every type inside it crosses unchanged too.
-//!
-//! Nothing has to be declared. The derive checks what it can see on the item,
-//! and the compiler decides the rest from the field types, so a type that
-//! does not qualify is simply converted. `#[wit(convert)]` forces conversion.
-//!
-//! The mapping names the type at the root of its crate, `owner::Type`. A type
-//! exported elsewhere declares `#[wit(path = owner::module::Type)]`; a path
-//! that does not resolve is a compile error in the component crate.
+//! The registry, the tasks and the map setting exist only on non-Wasm targets.
+//! A component is built from the generated files and carries none of them.
 //!
 //! # Keeping ordinary builds independent
 //!
-//! Gate the derive behind a default-off feature of the owning crate, so its
-//! ordinary build does not compile this crate:
+//! Gate the macros behind a default-off feature of the owning crate, so its
+//! ordinary build does not compile this crate. One `cfg_attr` takes several
+//! attributes, and rules can be stated on the type, so a gated type needs one
+//! block above it and nothing on its fields:
 //!
 //! ```text
-//! #[cfg_attr(feature = "wit", derive(wit_reflect::WitType))]
-//! pub struct BinaryReport { /* fields */ }
+//! #[cfg_attr(
+//!     feature = "wit",
+//!     derive(wit_reflect::WitType),
+//!     wit(display = "message", skip(diagnostic, cause))
+//! )]
+//! pub struct Failure { /* plain fields */ }
+//!
+//! #[cfg_attr(feature = "wit", wit_reflect::exports(inspect))]
+//! impl Session { /* plain functions */ }
 //! ```
 //!
 //! # Current scope
 //!
 //! This crate generates the WIT contract and the code that connects it to the
 //! Rust implementation, for wit-bindgen 0.63. Parameters are limited to plain
-//! values and borrowed resources, and operations are synchronous. `docs/phases.md`
-//! in the repository records the evidence and the limits of each phase.
+//! values and borrowed resources, and operations are synchronous. `docs/guide.md`
+//! in the repository is the worked example; `docs/phases.md` records the
+//! evidence and the limits of each phase.
 
 mod bindings;
 pub mod component;
@@ -407,8 +503,9 @@ pub use wit_reflect_macros::WitType;
 /// a WIT `resource`.
 ///
 /// The type's fields are not reflected: a resource crosses the boundary as a
-/// handle. Its exported functions are marked with [`macro@export`] and selected
-/// by the schema.
+/// handle. Its exported functions are named by [`macro@exports`] on their
+/// `impl` blocks, or marked with [`macro@export`] and listed by a schema
+/// program.
 ///
 /// `#[wit(name = "…")]` sets the resource's name; the default is the Rust name
 /// in kebab case. `#[wit(interface = "…")]` registers the resource as defined
@@ -421,8 +518,15 @@ pub use wit_reflect_macros::WitResource;
 /// Makes the signature of a function or method available to a [`Schema`].
 ///
 /// The function itself is unchanged. Its name, parameter names, types and
-/// documentation are reflected from the declaration, and it becomes part of a
-/// contract only when a schema lists it with [`operation!`](macro@operation).
+/// documentation are reflected from the declaration. The mark alone exports
+/// nothing: a function becomes part of a contract when it names an interface
+/// (see "Registering" below), when [`macro@exports`] on its `impl` block
+/// registers it, or when a schema program lists it with
+/// [`operation!`](macro@operation).
+///
+/// A function of a resource usually needs no mark of its own:
+/// `#[exports(a, b)]` on the block names the exported functions and applies
+/// this mark to them.
 ///
 /// | Rust | WIT |
 /// | --- | --- |

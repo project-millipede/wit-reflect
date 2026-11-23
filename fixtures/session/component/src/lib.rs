@@ -3,7 +3,7 @@
 //! Everything this crate adds to `session-owner` is generated:
 //!
 //! - `wit/session.wit`, the contract;
-//! - `src/bindings.rs`, the schema's part of the `wit_bindgen::generate!` call;
+//! - `src/bindings.rs`, the contract's part of the `wit_bindgen::generate!` call;
 //! - `src/forwarding.rs`, the implementation of the binding traits.
 //!
 //! The three files are written by `cargo run -p session-owner --bin generate`.
@@ -33,8 +33,9 @@ mod tests {
     use crate::exports::native::{GuestSession, InspectionFailureKind};
 
     /// The operations run through the generated forwarding and return the
-    /// values the bindings pass on. Each assertion is one rule or one piece
-    /// of structure that lowering and assembly must agree on.
+    /// values the bindings pass on. Each assertion is one rule, one entry of
+    /// the owner's representation map or one piece of structure that lowering
+    /// and assembly must agree on.
     ///
     /// Where a binding is annotated with a `session_owner` type, the bindings
     /// use that owner type itself, so the annotation only compiles while the
@@ -76,9 +77,9 @@ mod tests {
             .expect("the selection is inspected");
         assert_eq!(report.byte_length, 4096);
         let image = &report.images[0];
-        // `remote` + `into`
+        // a map entry naming a `remote` enum
         assert!(matches!(image.endianness, Endianness::Little));
-        // `into` through `From`, producing an unchanged value
+        // a map entry converted through `From`, producing an unchanged value
         let file_type: &MachoValue = &image.file_type;
         assert_eq!(
             (file_type.value, file_type.name.as_deref()),
@@ -89,11 +90,11 @@ mod tests {
             (image.cpu_subtype.value, image.cpu_subtype.name.as_deref()),
             (2, Some("ARM64_ALL"))
         );
-        // `display`
+        // a map entry shown as `DisplayText`
         assert_eq!(image.minimum_os, "14.4");
         // private fields, read by the derive
         assert_eq!((image.file_range.offset, image.file_range.size), (0, 4096));
-        // `widen`, and state kept across `&mut self` calls
+        // a `usize` shown as `u64`, and state kept across `&mut self` calls
         assert_eq!(image.read_count, 1);
         let second_report = second_outcome.steps[0]
             .result
@@ -132,7 +133,7 @@ mod tests {
             ErrorKind::Truncated(range) if range.requested_size == 32 && range.available_size == 8
         ));
 
-        // `display` on a case payload.
+        // A map entry on a case payload.
         let undecodable = undecodable_outcome.steps[0]
             .result
             .as_ref()
