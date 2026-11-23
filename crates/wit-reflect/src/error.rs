@@ -139,11 +139,16 @@ pub enum SchemaError {
         rust_type: &'static str,
     },
 
-    /// Functions are recorded for a resource that no interface declares.
+    /// Functions are recorded for a resource that no interface declares or
+    /// reaches.
     ///
-    /// State the resource's interface, with `#[wit(interface = "…")]` on the
-    /// type or with [`InterfaceBuilder::resource`](crate::InterfaceBuilder::resource).
-    #[error("`{resource}` exports functions but no interface of this package declares it")]
+    /// Export a function that returns the resource, or state its interface
+    /// with `#[wit(interface = "…")]` on the type or with
+    /// [`InterfaceBuilder::resource`](crate::InterfaceBuilder::resource).
+    #[error(
+        "`{resource}` exports functions, but no interface of this package declares it or \
+         reaches it"
+    )]
     UndeclaredResource {
         /// The resource's Rust type.
         resource: &'static str,

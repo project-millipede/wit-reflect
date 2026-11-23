@@ -231,8 +231,9 @@ impl Schema {
         self
     }
 
-    /// Export a function of the resource `R` from the interface that declares
-    /// `R`, whether that declaration comes before or after this call.
+    /// Export a function of the resource `R` from the interface `R` belongs
+    /// to: the one that declares it, or else the only one that reaches it.
+    /// That interface may be stated before or after this call.
     ///
     /// Functions recorded here follow the ones listed with
     /// [`ResourceBuilder::method`], in the order of the calls.
@@ -256,8 +257,9 @@ impl Schema {
     /// Each named type belongs to exactly one interface:
     ///
     /// 1. A declared type belongs to the interface that declares it.
-    /// 2. An undeclared type belongs to the only interface that reaches it,
-    ///    through a field or an operation's signature.
+    /// 2. An undeclared type, a resource included, belongs to the only
+    ///    interface that reaches it, through a field or an operation's
+    ///    signature.
     /// 3. A type owned by another interface is imported with `use`.
     ///
     /// A type reachable only through a type of an external interface is not
@@ -269,8 +271,8 @@ impl Schema {
     /// clashing names, a type reached from several interfaces without an
     /// owner, a type declared twice or named twice, recursive types, empty
     /// definitions, unit values outside a `result`, invalid constructors,
-    /// functions of a resource no interface declares, and world items that
-    /// refer to nothing.
+    /// functions of a resource no interface declares or reaches, and world
+    /// items that refer to nothing.
     pub fn resolve(&self) -> Result<ResolvedPackage, SchemaErrors> {
         resolve::resolve(self)
     }

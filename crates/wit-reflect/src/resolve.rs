@@ -163,7 +163,9 @@ pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> 
     //    of each other, so they are reported together.
     let mut declaration_errors = Vec::new();
     let declarations = &attach_resource_methods(
+        graph,
         schema.interfaces(),
+        externals,
         schema.resource_methods(),
         &mut declaration_errors,
     );
@@ -205,32 +207,116 @@ pub(crate) fn resolve(schema: &Schema) -> Result<ResolvedPackage, SchemaErrors> 
 
 /// The interfaces with every separately recorded resource function added to
 /// the declaration of its resource.
+///
+/// A resource that no interface declares is placed as any other type is: it
+/// belongs to the only interface that reaches it, usually through the
+/// function that returns it.
 fn attach_resource_methods(
+    graph: &TypeGraph,
     declarations: &[InterfaceDeclaration],
+    externals: &[ExternalInterfaceDeclaration],
     resource_methods: &[DeclaredResourceMethod],
     errors: &mut Vec<SchemaError>,
 ) -> Vec<InterfaceDeclaration> {
     let mut declarations = declarations.to_vec();
-    let mut undeclared_resources = Vec::new();
+
+    // 1. Functions of a declared resource join its declaration. The others
+    //    are gathered per resource, in the order recorded.
+    let mut undeclared: Vec<DeclaredType> = Vec::new();
     for recorded in resource_methods {
         let resource_key = recorded.resource.definition_key();
         let declaration = declarations
             .iter_mut()
             .flat_map(|declaration| &mut declaration.declared)
+            .chain(&mut undeclared)
             .find(|declared| declared.ty.definition_key() == resource_key);
         match declaration {
             Some(declaration) => declaration.methods.push(recorded.method.clone()),
-            // One report per resource, however many functions it has.
-            None if undeclared_resources.contains(&recorded.rust_name) => {}
-            None => {
-                undeclared_resources.push(recorded.rust_name);
-                errors.push(SchemaError::UndeclaredResource {
-                    resource: recorded.rust_name,
-                });
+            None => undeclared.push(DeclaredType {
+                rust_name: recorded.rust_name,
+                ty: recorded.resource.clone(),
+                name: None,
+                methods: vec![recorded.method.clone()],
+            }),
+        }
+    }
+
+    // 2. An undeclared resource joins the only interface that reaches it. Its
+    //    own functions can reach another resource, so this repeats until
+    //    nothing more is placed.
+    let mut is_placing = true;
+    while is_placing {
+        is_placing = false;
+        let mut unplaced = Vec::new();
+        for resource in undeclared {
+            let reaching = reaching_interfaces(graph, &declarations, externals, &resource);
+            if let [position] = reaching.as_slice() {
+                declarations[*position].declared.push(resource);
+                is_placing = true;
+            } else {
+                unplaced.push(resource);
             }
+        }
+        undeclared = unplaced;
+    }
+
+    // 3. A resource that nothing reaches is reported here. One that several
+    //    interfaces reach is reported with the other types, by placement.
+    for resource in &undeclared {
+        if reaching_interfaces(graph, &declarations, externals, resource).is_empty() {
+            errors.push(SchemaError::UndeclaredResource {
+                resource: resource.rust_name,
+            });
         }
     }
     declarations
+}
+
+/// The positions of the interfaces that reach `resource`: through the
+/// signature of a function, or through a type such a signature refers to.
+///
+/// The walk is the one `Placement::assign` makes. It stops at a type another
+/// interface declares, whose references belong to that interface.
+fn reaching_interfaces(
+    graph: &TypeGraph,
+    declarations: &[InterfaceDeclaration],
+    externals: &[ExternalInterfaceDeclaration],
+    resource: &DeclaredType,
+) -> Vec<usize> {
+    let Some(target) = resource.ty.definition_key() else {
+        return Vec::new();
+    };
+    let declares = |declared: &[DeclaredType], key: TypeKey| {
+        declared
+            .iter()
+            .any(|declared| declared.ty.definition_key() == Some(key))
+    };
+
+    let mut reaching = Vec::new();
+    for (position, declaration) in declarations.iter().enumerate() {
+        let is_declared_elsewhere = |key: TypeKey| {
+            let by_another_interface =
+                declarations.iter().enumerate().any(|(other, declaration)| {
+                    other != position && declares(&declaration.declared, key)
+                });
+            by_another_interface
+                || externals
+                    .iter()
+                    .any(|external| declares(&external.declared, key))
+        };
+        let mut visited = HashSet::new();
+        let mut pending = interface_roots(declaration);
+        while let Some(key) = pending.pop() {
+            if key == target {
+                reaching.push(position);
+                break;
+            }
+            if visited.insert(key) && !is_declared_elsewhere(key) {
+                collect_references(graph.definition(key), &mut pending);
+            }
+        }
+    }
+    reaching
 }
 
 fn report_cycles(graph: &TypeGraph, errors: &mut Vec<SchemaError>) {

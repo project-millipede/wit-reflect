@@ -278,7 +278,6 @@ pub type InspectionOutcome = Outcome<InspectionStepOutcome>;
 
 /// A client that remembers the selected resource between calls.
 #[derive(Debug, WitResource)]
-#[wit(interface = "native")]
 pub struct Session {
     selection: Option<String>,
     inspections: usize,

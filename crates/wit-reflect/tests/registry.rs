@@ -14,8 +14,8 @@ use std::error::Error;
 
 use wit_reflect::{Schema, SchemaError, WitResource, WitType, export, exports, named, operation};
 
-// The block comes before the resource it belongs to, so its functions are
-// registered before any interface declares `Session`.
+// No mark states the interface of `Session`. It belongs to `native`, whose
+// function `create_session` returns it.
 #[exports]
 impl Session {
     /// Inspect the selected resource.
@@ -44,7 +44,6 @@ impl Session {
 }
 
 #[derive(WitResource)]
-#[wit(interface = "native")]
 struct Session {
     selection: Option<String>,
 }
@@ -89,12 +88,12 @@ impl Orphan {
 #[test]
 fn marked_items_declare_the_package_a_schema_program_would() -> Result<(), Box<dyn Error>> {
     let mut listed = Schema::new("example:session@0.1.0".parse()?);
+    listed.interface("binary").define::<Report>();
     listed
         .interface("native")
         .resource::<Session>()
         .method(operation!(registry::Session::inspect))
         .method(operation!(registry::Session::reset));
-    listed.interface("binary").define::<Report>();
     listed
         .interface("native")
         .define_as::<ReportOutcome>("report-outcome")
