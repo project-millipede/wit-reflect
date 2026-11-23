@@ -56,15 +56,28 @@ An error can carry its `Display` message next to its typed cases:
 
 ```rust
 #[derive(WitType)]
-#[wit(
-    field(name = "message", into = String, with = ToString::to_string),
-    cases = "kind"
-)]
+#[wit(display = "message", cases = "kind")]
 pub enum InspectionFailure {
     Selection(Failure),
     Analysis(AnalysisError),
 }
 ```
+
+Rules can also be stated together above the item, which leaves its fields as
+plain Rust:
+
+```rust
+#[derive(WitType)]
+#[wit(display = "message", skip(cause))]
+pub struct Failure {
+    pub kind: FailureKind,
+    pub cause: Option<Box<dyn Error + Send + Sync>>,
+}
+```
+
+`display = "message"` adds a field holding the value's `Display` text: a
+method cannot cross the boundary, so the text travels as data. `skip(cause)`
+keeps a field out of the contract.
 
 ### 2. Mark the operations
 
@@ -362,6 +375,7 @@ function replace the default.
 | `#[wit(into = W, with = f)]` | `W`, from `f(&self)` | `f: fn(&Self) -> W` |
 | `#[wit(skip)]` | absent | — |
 | `#[wit(skip(a, b))]` on the type | the named fields are absent | each name is a field without a rule of its own |
+| `#[wit(display = "…")]` on the type | an extra leading `string` field with the value's `Display` text | the type is `Display` |
 | `#[wit(field(name = "…", into = W, with = f))]` on the type | an extra leading field | as above |
 | `#[wit(cases = "…")]` on an enum with such a field | a record holding the cases | — |
 | `#[wit(transparent)]` on a single-field struct | the field's own representation | — |

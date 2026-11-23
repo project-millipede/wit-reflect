@@ -362,8 +362,10 @@ pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 /// # Computed fields
 ///
 /// `#[wit(field(name = "…", into = W, with = function))]` on the item adds a
-/// leading field of wire type `W` computed from the whole value, for example
-/// `into = String, with = ToString::to_string` for a `Display` message.
+/// leading field of wire type `W` computed from the whole value.
+/// `#[wit(display = "…")]` is the short form for the common case, a `string`
+/// field holding the value's `Display` text: a method cannot cross the
+/// boundary, so the text travels as data.
 ///
 /// A WIT variant cannot hold a field next to its cases. An enum with computed
 /// fields is therefore exported as a record, and `#[wit(cases = "…")]` names

@@ -163,8 +163,15 @@ pub struct Image {
 }
 
 #[derive(WitType)]
-#[wit(field(name = "message", into = String, with = ToString::to_string), cases = "kind")]
+#[wit(display = "message", cases = "kind")]   // its `Display` text as a field
 pub enum InspectionFailure { Selection(Failure), Inspection(InspectionError) }
+
+#[derive(WitType)]
+#[wit(display = "message", skip(cause))]      // rules stated above the item
+pub struct Failure {
+    pub kind: FailureKind,
+    cause: Option<Box<dyn Error + Send + Sync>>,
+}
 ```
 
 ```wit
@@ -294,6 +301,18 @@ pub struct BinaryReport { /* fields */ }
 impl Session {
     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
 }
+```
+
+One `cfg_attr` takes several attributes, and rules can be stated on the item,
+so a gated type needs one block above it and none on its fields:
+
+```rust
+#[cfg_attr(
+    feature = "wit",
+    derive(wit_reflect::WitType),
+    wit(display = "message", skip(diagnostic, cause))
+)]
+pub struct Failure { /* plain fields */ }
 ```
 
 The registry and the settings reader exist only on non-Wasm targets, so a

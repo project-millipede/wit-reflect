@@ -170,10 +170,7 @@ pub enum ErrorKind {
 }
 
 #[derive(Debug, WitType)]
-#[wit(
-    interface = "binary",
-    field(name = "message", into = String, with = ToString::to_string)
-)]
+#[wit(interface = "binary", display = "message")]
 pub struct AnalysisError {
     pub kind: ErrorKind,
 }
@@ -204,10 +201,7 @@ pub enum FailureKind {
 }
 
 #[derive(Debug, WitType)]
-#[wit(
-    field(name = "message", into = String, with = ToString::to_string),
-    skip(cause)
-)]
+#[wit(display = "message", skip(cause))]
 pub struct Failure {
     pub kind: FailureKind,
     pub cause: Option<Box<dyn Error + Send + Sync>>,
@@ -225,10 +219,7 @@ impl fmt::Display for Failure {
 impl Error for Failure {}
 
 #[derive(Debug, WitType)]
-#[wit(
-    field(name = "message", into = String, with = ToString::to_string),
-    cases = "kind"
-)]
+#[wit(display = "message", cases = "kind")]
 pub enum InspectionFailure {
     Selection(Failure),
     Analysis(AnalysisError),

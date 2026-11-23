@@ -2,7 +2,7 @@
 
 use quote::ToTokens;
 use syn::meta::ParseNestedMeta;
-use syn::{Attribute, Expr, ExprLit, ExprPath, Ident, Lit, LitStr, Meta, Path, Type};
+use syn::{Attribute, Expr, ExprLit, ExprPath, Ident, Lit, LitStr, Meta, Path, Type, parse_quote};
 
 /// Collects every problem in an item so one compilation reports them all.
 #[derive(Default)]
@@ -62,6 +62,15 @@ pub(crate) struct ComputedField {
 }
 
 impl ComputedField {
+    /// `display = "name"`: the value's `Display` text as the field `name`.
+    fn display(name: LitStr) -> Self {
+        Self {
+            name,
+            wire_type: parse_quote!(::std::string::String),
+            function: parse_quote!(::std::string::ToString::to_string),
+        }
+    }
+
     fn parse(meta: &ParseNestedMeta<'_>) -> syn::Result<Self> {
         let mut name = None;
         let mut wire_type = None;
@@ -113,6 +122,10 @@ impl ContainerAttributes {
                 let computed_field = ComputedField::parse(&meta)?;
                 parsed.computed_fields.push(computed_field);
                 Ok(())
+            } else if meta.path.is_ident("display") {
+                let name = meta.value()?.parse()?;
+                parsed.computed_fields.push(ComputedField::display(name));
+                Ok(())
             } else if meta.path.is_ident("skip") {
                 meta.parse_nested_meta(|entry| {
                     let field = entry.path.require_ident()?.clone();
@@ -140,8 +153,8 @@ impl ContainerAttributes {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "expected `name`, `interface`, `transparent`, `field`, `skip`, `cases`, \
-                     `remote`, `convert`, `path` or `crate`",
+                    "expected `name`, `interface`, `transparent`, `field`, `display`, `skip`, \
+                     `cases`, `remote`, `convert`, `path` or `crate`",
                 ))
             }
         });
