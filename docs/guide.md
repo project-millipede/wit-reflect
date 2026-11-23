@@ -131,7 +131,6 @@ keeps a field out of the contract.
 ```rust
 /// A client that remembers the selected resource between calls.
 #[derive(WitResource)]
-#[wit(interface = "native")]
 pub struct Session { /* fields are not exported */ }
 
 #[exports(select, selection, inspect, progress)]
@@ -145,6 +144,13 @@ impl Session {
 /// Create a session without a selection.
 #[export(interface = "native")]
 pub fn create_session() -> Session { /* … */ }
+
+/// What the component's environment supplies.
+#[exports(interface = "native", open_session)]
+pub trait SessionSource {
+    /// Create a session with `resource` selected.
+    fn open_session(resource: &str) -> Session;
+}
 ```
 
 `#[exports(…)]` names the functions of the block that are exported. It does
@@ -158,6 +164,13 @@ not in the contract, and the contract does not shape the Rust code.
 A function can carry the mark itself instead, `#[export]`, in a block marked
 with a plain `#[exports]`. A free function always does, and so does a function
 without `self` that is a `static` function or a `constructor`.
+
+`create_session` states its interface because it is an entry point. `Session`
+states none: it belongs to `native` because that function returns it.
+
+`SessionSource` declares a function the owner crate cannot implement. The
+component crate implements the trait; see
+[Where a function is exported from](#where-a-function-is-exported-from).
 
 ### 3. State what the items cannot
 
@@ -269,6 +282,9 @@ interface native {
 
   /// Create a session without a selection.
   create-session: func() -> own<session>;
+
+  /// Create a session with `resource` selected.
+  open-session: func(%resource: string) -> own<session>;
 }
 
 world session {
@@ -311,6 +327,11 @@ impl crate::exports::native::Guest for Component {
         let created = session_owner::create_session();
         crate::exports::native::Session::new(::wit_reflect::component::ResourceCell::new(created))
     }
+
+    fn open_session(resource: ::std::string::String) -> crate::exports::native::Session {
+        let created = <Component as session_owner::SessionSource>::open_session(&resource);
+        crate::exports::native::Session::new(::wit_reflect::component::ResourceCell::new(created))
+    }
 }
 
 impl crate::exports::native::GuestSession for ::wit_reflect::component::ResourceCell<session_owner::Session> {
@@ -335,7 +356,19 @@ mod forwarding;
 use forwarding::Component;
 
 export!(Component);
+
+// The one function the owner crate declares and this crate implements.
+impl session_owner::SessionSource for Component {
+    fn open_session(resource: &str) -> session_owner::Session {
+        let mut session = session_owner::create_session();
+        session.select(resource);
+        session
+    }
+}
 ```
+
+The `impl` block carries no mark. The trait in the owner crate declares the
+function; this crate supplies its body.
 
 `generate_bindings!` already knows the world, the types that cross unchanged
 and the derive the forwarding needs. You pass what describes your crate: the
@@ -345,9 +378,10 @@ WIT directory, and any other `wit_bindgen::generate!` option except `world`.
 
 | You write | Where | Effect |
 | --- | --- | --- |
-| `#[wit(interface = "…")]` | a derived type or resource | The interface defines it. |
+| `#[wit(interface = "…")]` | a derived type or resource | The interface defines it. Without the mark, the item belongs to the only interface that reaches it. |
 | `#[export(interface = "…")]` | a free function | The interface exports it. |
 | `#[exports(a, b)]` | an `impl` block | The named functions are exported from the resource. A plain `#[exports]` exports the functions marked `#[export]`. |
+| `#[exports(interface = "…", a)]` | a trait | The named functions are exported from the interface. The component crate implements the trait. |
 | `#[named]` | a type alias | The instantiation is named after the alias, in kebab case. |
 | `representations! { … }` | once in a crate | The map: how each type of another crate is shown. |
 | `representations = "crate::…"` | `[package.metadata.wit-reflect]` of the crate that has the map | Every derive of that crate's library uses the map. Needs the `representations` feature of wit-reflect. |
@@ -358,7 +392,9 @@ WIT directory, and any other `wit_bindgen::generate!` option except `world`.
 | `[[package.metadata.wit-reflect.function]]` | the same file | A function the component crate implements itself: `interface`, `name`, `path`, and optionally `returns` and `docs`. |
 
 A component crate compiles only after its files are generated, so it cannot
-register anything. That is the one case for a `function` entry.
+register anything. Declare a function it implements on a trait in the crate
+that owns the function's types. A `function` entry states the same in the
+manifest, for a function that has no such crate.
 
 Generated code calls a registered operation at the root of its crate:
 `session_owner::create_session`, `session_owner::Session::inspect`. If it is
@@ -367,6 +403,202 @@ or `#[exports(path = owner::api::Session)]`.
 
 Registrations are applied in source order: by package name, then file and
 line. Interfaces and definitions appear in that order in the WIT.
+
+## Where a function is exported from
+
+A function joins the contract in exactly one way: a mark names it. The mark
+stands on the block that holds the function, and there are three kinds of
+block. Which one you use follows from two questions:
+
+1. Does the function work on a resource, or does it stand alone?
+2. Who can write its body: the crate that owns the types, or only the
+   component?
+
+| The function | Its body is written in | Form |
+| --- | --- | --- |
+| works on a resource | the owner crate | 1. An `impl` block |
+| stands alone | the owner crate | 2. A free function |
+| stands alone | the component crate | 3. A trait |
+
+The examples below build one contract. A program stores named counters; a
+caller creates one, or opens one that the component's environment has stored,
+and then adds to it.
+
+### Form 1: an `impl` block, for the functions of a resource
+
+```rust
+#[derive(WitResource)]
+pub struct Counter {
+    value: u32,
+}
+
+#[exports(add, value)]
+impl Counter {
+    /// Add `amount` and return the new value.
+    pub fn add(&mut self, amount: u32) -> u32 {
+        self.value += amount;
+        self.value
+    }
+
+    /// The current value.
+    pub fn value(&self) -> u32 {
+        self.value
+    }
+
+    // Public, but not in the contract: it is not listed.
+    pub fn reset(&mut self) {
+        self.value = 0;
+    }
+}
+```
+
+What it implies:
+
+- **The functions belong to the resource.** They appear inside
+  `resource counter { … }` and take the resource as their receiver.
+- **No interface is stated.** A resource's functions are exported from the
+  interface the resource is in.
+- **`&self` and `&mut self` are both methods.** The generated code borrows the
+  resource shared or exclusively, as the signature says. A function that
+  consumes `self` cannot be exported.
+- **A function without `self` must say what it is:** `#[export(static)]` or
+  `#[export(constructor)]` on that function. Without it the block reports an
+  error.
+- **Only listed functions are exported.** `reset` stays an ordinary Rust
+  function. Visibility decides nothing.
+- **Several blocks combine.** Each `impl Counter` block lists its own exported
+  functions, in whichever file it stands.
+
+### Form 2: a free function, implemented where the types are
+
+```rust
+/// Create a counter that starts at zero.
+#[export(interface = "counters")]
+pub fn new_counter() -> Counter {
+    Counter { value: 0 }
+}
+```
+
+What it implies:
+
+- **The function states its interface.** It is an entry point, and an
+  interface is a named group of entry points.
+- **It places what it mentions.** `Counter` is returned by a function of
+  `counters` and by nothing else, so `Counter` belongs to `counters` without a
+  mark of its own. The same holds for every type in the signature.
+- **The body is ordinary Rust in the owner crate.** A native program calls
+  `new_counter()` directly; no component, no WIT and no Wasm runtime is
+  involved.
+- **The generated code calls it by path.** The function must be reachable at
+  its crate's root, or state `path = …`.
+
+### Form 3: a trait, for a function only the component can implement
+
+Some functions need something the owner crate does not have: a connection, a
+store, a clock that the component's environment supplies. The owner crate then
+declares the function and the component implements it.
+
+```rust
+// Owner crate: the declaration.
+#[exports(interface = "counters", open_counter)]
+pub trait CounterStore {
+    /// Open the counter stored under `name`.
+    fn open_counter(name: &str) -> Counter;
+}
+```
+
+```rust
+// Component crate: the implementation. No attribute.
+impl CounterStore for Component {
+    fn open_counter(name: &str) -> Counter {
+        storage::load(name)
+    }
+}
+```
+
+What it implies:
+
+- **The contract is still declared in Rust, in the owner crate.** The name,
+  the parameters, the result and the documentation come from the trait, as
+  they do for any other function.
+- **The component crate adds only the body.** It needs no mark and no setting.
+  It could not carry a mark anyway: it compiles only once the contract is
+  generated, so a generator never sees it.
+- **The compiler checks the implementation.** A missing or different
+  implementation does not compile; the error names the trait.
+- **The implementing type is `Component`,** the type the generated forwarding
+  file defines. A trait function therefore takes no `self`.
+- **The trait is ordinary Rust.** Another environment can implement it for a
+  type of its own. Nothing about it requires a component.
+- **Only listed functions are exported,** as on an `impl` block.
+
+### What the three forms generate
+
+```wit
+interface counters {
+  resource counter {
+    /// Add `amount` and return the new value.
+    add: func(amount: u32) -> u32;
+
+    /// The current value.
+    value: func() -> u32;
+  }
+
+  /// Create a counter that starts at zero.
+  new-counter: func() -> own<counter>;
+
+  /// Open the counter stored under `name`.
+  open-counter: func(name: string) -> own<counter>;
+}
+```
+
+Forms 2 and 3 are indistinguishable in the contract. They differ in what the
+generated forwarding calls:
+
+| Form | The generated call |
+| --- | --- |
+| 1 | `owner::Counter::add(&mut self.borrow_mut(), amount)` |
+| 2 | `owner::new_counter()` |
+| 3 | `<Component as owner::CounterStore>::open_counter(&name)` |
+
+### Where the interface comes from
+
+Only a root states an interface. A root is where an interface begins: a
+function of form 2 or 3, or a type that an interface must own although no
+function of that interface leads to it. Everything else follows the root that
+mentions it.
+
+| Item | States an interface? |
+| --- | --- |
+| A free function, or a trait's functions | yes: it is a root |
+| A resource that such a function returns or takes | no: it follows the function |
+| The functions of a resource | no: they follow the resource |
+| A type in a signature or in another type | no: it follows what refers to it |
+| A resource or type that nothing leads to, or that two interfaces lead to | yes: `#[wit(interface = "…")]` on the item |
+
+### What happens when
+
+| Situation | Result |
+| --- | --- |
+| A function is not listed | It is not exported and stays ordinary Rust. |
+| A listed name does not exist in the block | Compile error at the name. |
+| `impl` block: a function without `self` and without `static` or `constructor` | Compile error at the function. |
+| `impl` block: `interface = …` is given | Compile error: the resource's interface is used. |
+| The mark stands on `impl Trait for Type` | Compile error: mark the trait's declaration. |
+| Trait: a function takes `self` | Compile error at the receiver. |
+| Trait: no `interface = …`, or no function listed | Compile error at the trait. |
+| Trait: the component does not implement it | Compile error in the component, naming the trait. |
+| A signature has a shape the contract cannot carry | Compile error at the function: `async fn`, a generic function, a `&mut` parameter, a returned reference, a `usize` parameter. |
+
+### What no form does
+
+- Nothing is exported because it is `pub`, or because of where it stands in a
+  file or a crate. A mark names it.
+- No form changes the function. Marks add a hidden description next to it; the
+  function compiles and behaves as it does without them.
+- No form reaches into the component's `Cargo.toml`. The manifest holds the
+  settings of the contract as a whole: its package, its world, and what the
+  world imports and exports.
 
 ## Declaring with a schema program instead
 
@@ -387,7 +619,7 @@ call by call, for example to generate two contracts from the same crates.
 | `.export_as("label", t)` | A named export | `export label: t;` |
 | `Schema::from_registry(name)` | Start from everything the marks registered | what the marks declare |
 | `schema.name_instantiation::<T>("name")` | Name `T` wherever it is defined | what `#[named]` registers |
-| `schema.resource_method::<R>(operation!(R::f))` | Export a function of `R`, whichever interface declares it | what `#[exports]` registers |
+| `schema.resource_method::<R>(operation!(R::f))` | Export a function of `R`, whichever interface it belongs to | what `#[exports]` registers |
 
 Three rules decide what the declaration cannot leave open:
 

@@ -21,14 +21,19 @@
 //! pub type InspectionOutcome = Outcome<Report>;
 //!
 //! #[derive(WitResource)]
-//! #[wit(interface = "native")]
 //! pub struct Session { /* fields are not exported */ }
 //!
 //! #[wit_reflect::exports(inspect)]         // the exported functions of this block
 //! impl Session {
 //!     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
 //! }
+//!
+//! #[wit_reflect::export(interface = "native")]   // an entry point states its interface
+//! pub fn create_session() -> Session { /* … */ }
 //! ```
+//!
+//! `Session` states no interface: it belongs to `native` because that
+//! function returns it.
 //!
 //! In the `Cargo.toml` of the component crate:
 //!
@@ -59,8 +64,9 @@
 //! | --- | --- | --- |
 //! | [`#[derive(WitType)]`](macro@WitType) | a struct or enum | the type is part of the contract |
 //! | [`#[derive(WitResource)]`](macro@WitResource) | a struct | the type is a resource |
-//! | `#[wit(interface = "…")]` | a derived type or resource | the interface that owns it |
+//! | `#[wit(interface = "…")]` | a derived type or resource | the interface that owns it, where nothing else settles that |
 //! | [`#[exports(a, b)]`](macro@exports) | an `impl` block | the functions of the block that are exported |
+//! | [`#[exports(interface = "…", a)]`](macro@exports) | a trait | functions of an interface that the component crate implements |
 //! | [`#[export(interface = "…")]`](macro@export) | a free function | the interface that exports it |
 //! | [`#[named]`](macro@named) | a type alias | the name of that instantiation of a generic type |
 //! | [`representations!`](macro@representations) | once in a crate | how each type of another crate is shown |
@@ -511,10 +517,13 @@ pub use wit_reflect_macros::WitType;
 /// program.
 ///
 /// `#[wit(name = "…")]` sets the resource's name; the default is the Rust name
-/// in kebab case. `#[wit(interface = "…")]` registers the resource as defined
-/// in that interface, for [`Schema::from_registry`]; its functions are
-/// registered by [`macro@exports`]. `#[wit(crate = path)]` names this crate
-/// when it is re-exported elsewhere.
+/// in kebab case. `#[wit(crate = path)]` names this crate when it is
+/// re-exported elsewhere.
+///
+/// A resource belongs to the only interface that reaches it, usually through
+/// the function that returns it, as any other type does. `#[wit(interface =
+/// "…")]` states the interface where no function leads to the resource, or
+/// where functions of several interfaces do.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::WitResource;
 
@@ -564,7 +573,7 @@ pub use wit_reflect_macros::WitResource;
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::export;
 
-/// Registers the exported functions of an `impl` block, for
+/// Registers the exported functions of an `impl` block or of a trait, for
 /// [`Schema::from_registry`].
 ///
 /// ```text
@@ -589,7 +598,7 @@ pub use wit_reflect_macros::export;
 /// `#[cfg_attr(predicate, export)]` is registered under the same predicate.
 /// Listing and marking the same function is an error.
 ///
-/// The functions are exported from the interface that declares the resource,
+/// The functions are exported from the interface the resource belongs to,
 /// in the order they are written in the block. A resource may have several
 /// marked blocks.
 ///
@@ -604,6 +613,27 @@ pub use wit_reflect_macros::export;
 ///
 /// A block that exports nothing, a trait implementation and a generic block
 /// are compile errors.
+///
+/// # On a trait
+///
+/// A function that only the component crate can implement is declared on a
+/// trait, in the crate that owns its types:
+///
+/// ```text
+/// #[wit_reflect::exports(interface = "native", open_session)]
+/// pub trait SessionSource {
+///     /// Create a session with `resource` selected.
+///     fn open_session(resource: &str) -> Session;
+/// }
+/// ```
+///
+/// The listed functions are exported from the stated interface. The component
+/// crate implements the trait for the `Component` type of its generated
+/// forwarding file, without a mark, and the forwarding calls the functions
+/// through the trait. A missing implementation does not compile.
+///
+/// A trait function takes no `self`. A trait without an interface or without
+/// a listed function, and a generic trait, are compile errors.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::exports;
 

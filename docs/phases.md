@@ -49,6 +49,7 @@ Phase 6 it also produces the type mappings named in the third line.
 | Resolved package | The validated result of a schema. Only this can be rendered. |
 | Operation | A Rust function or method that is exported: named in `#[exports(…)]` on its `impl` block, or marked with `#[export]`. The mark adds a hidden companion that reflects its signature; `#[exports(…)]` applies it to the functions it names. |
 | Operation reference | `operation!(Session::inspect)`: names that companion in a schema program. |
+| Root | An item that states an interface: a function of an interface, or a type or resource that nothing else places. Everything a root mentions follows it. |
 | Resource | A Rust type exported as a WIT `resource` with `#[derive(WitResource)]`. By value it is `own<r>`, behind a reference `borrow<r>`. |
 | External interface | An interface of a pinned dependency. Types placed there are imported with `use`, never defined locally. |
 | World | Named imports and exports. A target is a declared interface or an external interface path. |
@@ -747,6 +748,71 @@ Limits:
 - A stated conversion is not a `From` implementation. A field rule
   `into = Shown` on such a type still needs one.
 
+### Phase 11 — Only a root states an interface (done)
+
+Two statements said what a function already says. A resource had to state its
+interface, although the function that returns it states one. And a function
+that only the component crate can implement was declared in that crate's
+manifest, as a signature written by hand, because the component crate cannot
+register anything.
+
+The rule that covers both: only a root states an interface. A root is a
+function of an interface, or a type or resource that nothing else places.
+Everything a root mentions follows it.
+
+- A resource that no interface declares belongs to the only interface that
+  reaches it, as any other type does. Its own functions can reach another
+  resource, so placing repeats until nothing more is placed.
+- `#[exports(interface = "…", a, b)]` on a trait registers the listed
+  functions as functions of that interface. Their signatures are reflected by
+  the code that reflects `#[export]`.
+- The component crate implements the trait for the `Component` type of its
+  generated forwarding, without a mark. The forwarding calls
+  `<Component as owner::Trait>::function(…)`.
+- A trait's function is a free function whose path names the trait. The
+  resolution of functions, the rendering and the settings did not change.
+- A `function` entry in the manifest keeps working.
+
+Evidence:
+
+| Test or check | What it establishes |
+| --- | --- |
+| `marked_items_declare_the_package_a_schema_program_would` (`crates/wit-reflect/tests/registry.rs`) | A resource without a mark is placed by the function that returns it. A trait's listed function is registered with the path through the trait, and an unlisted one is not exported. Both equal what a schema program lists. |
+| `declarations_that_fit_nowhere_are_reported` (same file) | A resource that nothing reaches is still reported. |
+| `committed_artifacts_are_what_the_declarations_generate` (`fixtures/session/owner`) | The fixture's resource lost its mark, which changed none of its three files. Its new trait adds one function to the WIT and one call through the trait to the forwarding. |
+| The fixture component compiles and `operations_return_lowered_values_through_generated_forwarding` passes | The generated call through the trait compiles against the component's implementation. |
+
+Verified by hand, not by a retained test:
+
+| Case | Result |
+| --- | --- |
+| A resource reached only through a function of another placed resource | placed in the same interface |
+| A resource that two interfaces reach | one error, naming both interfaces |
+| A trait function that takes `self` | compile error at the receiver |
+| A trait without an interface, or without a listed function | compile error at the trait |
+| A listed name the trait does not have | compile error at the name |
+| A generic trait | compile error at the type parameter |
+| `interface` on an `impl` block | compile error at the option |
+| A component that does not implement the trait | compile error in the generated forwarding, naming the trait |
+
+An uncommitted trial on copies of this repository and of the workbench
+preceded the implementation. In the workbench copy the resource's mark and the
+manifest's function entry were removed. Its WIT and bindings files did not
+change, one line of its forwarding file did, and the component built for
+`wasm32-unknown-unknown`.
+
+Limits:
+
+- Interfaces appear in the order in which they are first stated. Removing a
+  resource's mark moves its interface later if that mark stated it first.
+- A resource that nothing reaches, or that several interfaces reach, still
+  states its interface.
+- A trait function takes no `self`, and the implementing type is always the
+  forwarding's `Component`.
+- The trait is named at its crate's root unless `path = …` says otherwise.
+- The registration of a trait's functions is not compiled for Wasm targets;
+  the reflection of their signatures is.
+
 ## Alternatives to the derive, examined and not adopted
 
 The derive exists because a macro sees only the item it is attached to. Three
@@ -859,7 +925,5 @@ built on it would have to redo that work of the compiler.
 - Unchanged crossing for enums whose cases carry data, and for generic types
   through a type alias.
 - Asynchronous exports under JSPI, which the workbench's bindings enable.
-- Placing a resource by reachability, which would make its `interface` mark
-  unnecessary where a function of that interface returns it.
 - A representation map for generic items, and for containers other than
   `Option` and `Vec`.

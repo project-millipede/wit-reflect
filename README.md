@@ -3,7 +3,7 @@
 Generate a WIT contract, and the code behind it, from the Rust types and
 functions an implementation already has.
 
-**Status: Phases 1 to 10 are implemented.** From ordinary Rust the library
+**Status: Phases 1 to 11 are implemented.** From ordinary Rust the library
 generates the WIT contract, the bindings setup, the conversion of results and
 the code that forwards each exported function to its Rust operation. The
 contract is declared on the items themselves; no schema program is needed. A
@@ -30,7 +30,7 @@ read-only references.
 ### 1. Types and operations, in the crate that owns them
 
 ```rust
-use wit_reflect::{WitResource, WitType, exports, named};
+use wit_reflect::{WitResource, WitType, export, exports, named};
 
 #[derive(WitType)]
 #[wit(interface = "binary")]              // an interface has to own this type
@@ -55,7 +55,6 @@ pub struct Outcome<Step> {
 pub type InspectionOutcome = Outcome<Report>;
 
 #[derive(WitResource)]
-#[wit(interface = "native")]
 pub struct Session { /* fields are not exported */ }
 
 #[exports(inspect)]                       // the functions of this block that are exported
@@ -64,9 +63,13 @@ impl Session {
 
     pub fn read_at(&mut self, offset: u64) -> Vec<u8> { /* public, not exported */ }
 }
+
+#[export(interface = "native")]           // an entry point states its interface
+pub fn create_session() -> Session { /* … */ }
 ```
 
-Only `Report` and `Session` name an interface. Every other type is found
+Only `Report` and `create_session` name an interface. `Session` belongs to
+`native` because that function returns it, and every other type is found
 through the fields and signatures that refer to it.
 
 ### 2. Types of other crates, once
@@ -170,6 +173,8 @@ interface native {
   resource session {
     inspect: func(%resource: string) -> inspection-outcome;
   }
+
+  create-session: func() -> own<session>;
 }
 
 world session {
@@ -247,8 +252,9 @@ that is not exported at its crate's root.
 | --- | --- | --- |
 | `#[derive(WitType)]` | a struct or enum | the type is part of the contract |
 | `#[derive(WitResource)]` | a struct | the type is a resource |
-| `#[wit(interface = "…")]` | a derived type or resource | the interface that owns it |
+| `#[wit(interface = "…")]` | a derived type or resource | the interface that owns it, where nothing else settles that |
 | `#[exports(a, b)]` | an `impl` block | the functions of the block that are exported |
+| `#[exports(interface = "…", a)]` | a trait | functions of an interface that the component crate implements |
 | `#[export(interface = "…")]` | a free function | the interface that exports it |
 | `#[named]` | a type alias | the name of that instantiation of a generic type |
 | `representations! { … }` | once in a crate | how each type of another crate is shown |
@@ -275,9 +281,15 @@ Rules worth knowing:
 - **Operations are exported deliberately.** A method joins the contract when
   `#[exports(…)]` on its `impl` block names it. Methods from several blocks
   combine. A block may hold public functions that are not exported.
-- **Each type has one owning interface.** A type that names an interface
-  belongs there. Any other type belongs to the only interface that reaches it.
-  A type reached from two interfaces must name one of them.
+- **Only a root states an interface.** A function of an interface is a root;
+  so is a type that names its interface. Everything else, a resource
+  included, belongs to the only interface that reaches it. An item reached
+  from two interfaces, or from none, must name one.
+- **A function the owner crate cannot implement is declared on a trait.**
+  `#[exports(interface = "…", f)]` on the trait exports the function, and
+  the component crate implements the trait for its generated `Component`
+  type. The implementation carries no mark, and a missing one does not
+  compile.
 - **Instantiations are never merged.** `Outcome<A>` and `Outcome<B>` are two
   definitions. Each needs a name: mark an alias of it with `#[named]`. No name
   is composed from the type arguments.
