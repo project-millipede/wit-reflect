@@ -10,6 +10,10 @@ publish.workspace = true
 default = ["derive"]
 # Re-export `#[derive(WitType)]`. Disable it to use only manual implementations.
 derive = ["dep:wit-reflect-macros"]
+# Let a crate name its representation map in its `Cargo.toml`, so that its
+# derives use the map without naming it. Enable it in the crate that has
+# the setting.
+representations = ["derive", "wit-reflect-macros/representations"]
 # Read the contract settings from a `Cargo.toml` and write or check the
 # generated files. Enable it in a generator program only.
 tasks = ["dep:toml"]

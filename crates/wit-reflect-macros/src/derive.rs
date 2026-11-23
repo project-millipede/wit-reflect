@@ -19,6 +19,7 @@ use crate::attributes::{
     ComputedField, ContainerAttributes, Errors, FieldAttributes, FieldRule, VariantAttributes,
 };
 use crate::names::{kebab_name, public_path, registration, runtime_path, with_docs};
+use crate::setting;
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let mut errors = Errors::default();
@@ -61,6 +62,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         identity_assembly,
     } = crossing.code(&shape, ident, &container, &runtime, map.as_ref());
 
+    let tracked_manifest = setting::tracked_manifest();
     let reflected_generics = with_bounds(&input.generics, &quote! { #runtime::WitType });
     let (reflect_impl, type_generics, reflect_where) = reflected_generics.split_for_impl();
     let lowered_generics = with_bounds(&input.generics, &quote! { #lower::Lower });
@@ -88,6 +90,8 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         #remote_conversion
 
         #registration
+
+        #tracked_manifest
     })
 }
 
@@ -118,11 +122,13 @@ pub(crate) fn interface_registration(
     )
 }
 
-/// The representation map the item's fields are looked up in, if any.
+/// The representation map the item's fields are looked up in, if any: the
+/// one the item names, or else the one the crate's manifest names.
 ///
 /// The lookup is a constant expression, which cannot mention a type
-/// parameter. A generic item therefore uses no map; naming one on it is an
-/// error, so that the fields are not silently left out of it.
+/// parameter. A generic item therefore uses no map. Naming one on it is an
+/// error, so that its fields are not silently left out; the crate's map just
+/// does not reach it.
 fn item_map(
     input: &DeriveInput,
     container: &ContainerAttributes,
@@ -139,7 +145,14 @@ fn item_map(
             None
         }
         (Some(map), false) => Some(map.clone()),
-        (None, _) => None,
+        (None, true) => None,
+        (None, false) => match setting::crate_map() {
+            Ok(crate_map) => crate_map,
+            Err(message) => {
+                errors.report(&input.ident, &message);
+                None
+            }
+        },
     }
 }
 

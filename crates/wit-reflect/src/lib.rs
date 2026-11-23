@@ -555,8 +555,19 @@ pub use wit_reflect_macros::named;
 /// an entry's path must begin with its group's name. The groups do nothing
 /// else; they keep a growing map ordered.
 ///
-/// An item uses the map through `#[wit(map = Representations)]`. Each of its
-/// fields without a rule is then shown as the map's entry for the field's
+/// A crate names its map once, in its `Cargo.toml`, and every derive of its
+/// library then uses it:
+///
+/// ```toml
+/// [package.metadata.wit-reflect]
+/// representations = "crate::wit::Representations"
+/// ```
+///
+/// Reading the manifest needs the `representations` feature of this crate;
+/// enable it in the crate that has the setting. Without the setting, or for
+/// another map, an item names one with `#[wit(map = Representations)]`.
+///
+/// Each field without a rule is then shown as the map's entry for the field's
 /// type, or as the type itself if the map has none:
 ///
 /// - A rule on a field takes precedence over the map.
@@ -569,6 +580,10 @@ pub use wit_reflect_macros::named;
 ///
 /// The compiler makes the choice for each field. Nothing is looked up when a
 /// value crosses.
+///
+/// The setting applies to the package's library target. A generic item uses no
+/// map, because the choice needs a concrete field type; a foreign field there
+/// takes a rule.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::representations;
 

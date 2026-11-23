@@ -139,26 +139,33 @@ fn main() -> std::process::ExitCode {
 }
 ```
 
-Where a field cannot cross the boundary as stored, a rule names its wire type:
+A type of another crate cannot carry a derive. How it is shown is stated
+once for the crate, and its fields then need no rule:
 
 ```rust
 #[derive(WitType)]
 #[wit(remote = object::Endianness)]      // checked against the foreign enum
 enum Endianness { Little, Big }
 
+wit_reflect::representations! {
+    pub(crate) Representations {
+        object {
+            object::Endianness => Endianness,           // a dependency's enum
+            object::macho::FileType => MachoValue,      // a wrapped number as { value, name }
+            object::macho::Version => DisplayText,      // its formatted text
+        }
+    }
+}
+
 #[derive(WitType)]
 pub struct Image {
-    #[wit(into = Endianness)]            // a dependency's enum
     pub endianness: object::Endianness,
-    #[wit(into = MachoValue)]            // a wrapped number as { value, name }
     pub file_type: macho::FileType,
     #[wit(into = MachoValue, with = Image::subtype)]  // depends on a sibling
     pub cpu_subtype: macho::CpuSubtype,
-    #[wit(display)]                      // formatted text
     pub minimum_os: Version,
-    #[wit(widen)]                        // usize as u64
-    pub read_count: usize,
-    #[wit(skip)]                         // not part of the contract
+    pub read_count: usize,                // shown as u64
+    #[wit(skip)]                          // not part of the contract
     pub cause: Option<Box<dyn Error>>,
 }
 
@@ -277,6 +284,11 @@ Rules worth knowing:
 - **Rules are checked where they are written.** `into` needs a `From` impl,
   `display` needs `Display`, a `remote` declaration is matched exhaustively
   against the foreign type. A rule that no longer holds stops compiling.
+- **A foreign type is described once.** A crate's `representations!` map says
+  how each type of another crate is shown. For every field without a rule the
+  compiler picks the map's entry for its type, or the type itself. A rule on a
+  field wins, and a type the map does not name is not covered. The crate
+  names its map in `Cargo.toml`, or an item names one with `#[wit(map = …)]`.
 - **Generated artifacts are committed and checked.** The WIT, the bindings
   file and the forwarding file are outputs of the schema. One command rewrites
   them; another fails when they are stale and changes nothing.
@@ -362,6 +374,8 @@ cargo run -p session-owner --bin generate -- --check
   exactly one Rust function.
 - Binding tools other than wit-bindgen 0.63. The bindings and forwarding files
   follow its options and naming; a mismatch is a compile error.
+- A representation map for generic items, and for containers other than
+  `Option` and `Vec`. A field there takes a rule.
 - Crossing unchanged for generic types and for enums whose cases carry data.
   They are converted.
 - Comparing a type placed in an external interface with that interface's WIT.

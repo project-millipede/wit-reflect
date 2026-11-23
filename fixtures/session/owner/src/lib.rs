@@ -18,7 +18,8 @@
 use std::error::Error;
 use std::fmt;
 
-use wit_reflect::{WitResource, WitType, export, exports, named};
+use wit_reflect::rule::DisplayText;
+use wit_reflect::{WitResource, WitType, export, exports, named, representations};
 
 pub mod foreign {
     use std::fmt;
@@ -86,6 +87,19 @@ pub mod foreign {
     }
 }
 
+representations! {
+    /// How the contract shows each type of the `foreign` module. A field of
+    /// one of these types needs no rule.
+    pub Representations {
+        foreign {
+            foreign::Endianness => Endianness,
+            foreign::FileType => MachoValue,
+            foreign::Version => DisplayText,
+            foreign::DecodeError => DisplayText,
+        }
+    }
+}
+
 #[derive(Debug, WitType)]
 #[wit(remote = foreign::Endianness)]
 pub enum Endianness {
@@ -127,16 +141,13 @@ impl FileRange {
 
 #[derive(Debug, WitType)]
 pub struct Image {
-    #[wit(into = Endianness)]
     pub endianness: foreign::Endianness,
-    #[wit(into = MachoValue)]
     pub file_type: foreign::FileType,
+    // The one rule left: this value depends on the field next to it.
     #[wit(into = MachoValue, with = Image::subtype_value)]
     pub cpu_subtype: foreign::CpuSubtype,
-    #[wit(display)]
     pub minimum_os: foreign::Version,
     pub file_range: FileRange,
-    #[wit(widen)]
     pub read_count: usize,
 }
 
@@ -166,7 +177,7 @@ pub enum ErrorKind {
         available_size: u64,
     },
     UnsupportedImage,
-    Decode(#[wit(display)] foreign::DecodeError),
+    Decode(foreign::DecodeError),
 }
 
 #[derive(Debug, WitType)]

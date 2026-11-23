@@ -33,24 +33,62 @@ pub struct Report {
 }
 ```
 
-Where a field cannot cross as stored, a rule says how it is represented:
+A field whose type belongs to another crate cannot cross as stored: no derive
+can be placed on that type. How it is shown is a fact about the type, so the
+crate states it once, in a map:
+
+```rust
+representations! {
+    /// How the contract shows each type of the `foreign` module.
+    pub Representations {
+        foreign {
+            foreign::Endianness => Endianness,     // a dependency's enum
+            foreign::FileType => MachoValue,       // wrapped number as { value, name }
+            foreign::Version => DisplayText,       // its formatted text
+            foreign::DecodeError => DisplayText,
+        }
+    }
+}
+```
+
+One line in the crate's `Cargo.toml` names the map for every derive of the
+crate:
+
+```toml
+[package.metadata.wit-reflect]
+representations = "crate::Representations"
+```
+
+The fields then carry no rule:
 
 ```rust
 #[derive(WitType)]
 pub struct Image {
-    #[wit(into = Endianness)]                              // a dependency's enum
     pub endianness: foreign::Endianness,
-    #[wit(into = MachoValue)]                              // wrapped number as { value, name }
     pub file_type: foreign::FileType,
     #[wit(into = MachoValue, with = Image::subtype_value)] // needs a sibling field
     pub cpu_subtype: foreign::CpuSubtype,
-    #[wit(display)]                                        // formatted text
     pub minimum_os: foreign::Version,
     pub file_range: FileRange,                             // private fields are fine
-    #[wit(widen)]                                          // usize as u64
-    pub read_count: usize,
+    pub read_count: usize,                                 // shown as u64
 }
 ```
+
+- **An entry is `Foreign => Shown`:** the contract shows `Foreign` as the type
+  `Shown`, converted with `From`. `DisplayText` is the library's type for a
+  value's `Display` text; it appears as `string`.
+- **Entries stand in groups** named after where their types come from. An
+  entry whose path does not begin with its group's name is a compile error.
+- **A rule on a field still works** and wins over the map. `cpu_subtype` keeps
+  one because its value depends on the field next to it, which is a fact about
+  this field and not about its type.
+- **`usize` needs nothing.** WIT has no platform-sized integer, so it is shown
+  as `u64`, which holds every value.
+- **A type the map does not name is not covered.** A foreign field without an
+  entry and without a rule is a compile error at the field.
+
+The compiler makes the choice for each field: the map's entry for its type, or
+the type itself. Nothing is looked up when a value crosses.
 
 An error can carry its `Display` message next to its typed cases:
 
@@ -302,6 +340,9 @@ WIT directory, and any other `wit_bindgen::generate!` option except `world`.
 | `#[export(interface = "…")]` | a free function | The interface exports it. |
 | `#[exports(a, b)]` | an `impl` block | The named functions are exported from the resource. A plain `#[exports]` exports the functions marked `#[export]`. |
 | `#[named]` | a type alias | The instantiation is named after the alias, in kebab case. |
+| `representations! { … }` | once in a crate | The map: how each type of another crate is shown. |
+| `representations = "crate::…"` | `[package.metadata.wit-reflect]` of the crate that has the map | Every derive of that crate's library uses the map. Needs the `representations` feature of wit-reflect. |
+| `#[wit(map = path)]` | a derived type | That item uses the named map. For a crate without the setting, or for another map. |
 | `package`, `world` | `[package.metadata.wit-reflect]` | The package and the world's name. |
 | `imports`, `exports` | the same table | The world's items. `{ interface = "…", name = "…" }` gives an export its own name. |
 | `wit`, `bindings`, `forwarding` | the same table | Output paths. They default to `wit/<world>.wit`, `src/bindings.rs` and `src/forwarding.rs`. |
@@ -382,7 +423,8 @@ function replace the default.
 
 ### Types of other crates
 
-No derive can be placed on a dependency's type, so its shape is stated once.
+No derive can be placed on a dependency's type, so its shape is stated once,
+as a type of your own. The map then names that type for the foreign one.
 
 ```rust
 // An enum: a local declaration that the compiler checks against the real one.
@@ -399,6 +441,14 @@ impl From<foreign::FileType> for MachoValue { /* into_inner(), name() */ }
 
 These are the only wire-shaped types a person writes. If the foreign enum gains
 a case, the `remote` declaration stops compiling.
+
+Three limits of the map:
+
+- A generic item cannot use it, because the choice is made per concrete field
+  type. A foreign field inside a generic struct takes a rule.
+- An entry for `T` covers `Option<T>` and `Vec<T>`, not other containers.
+- The setting applies to the package's library. A binary, example or
+  integration test of the same package is a crate of its own.
 
 ## What is generated, and what is not
 
@@ -421,6 +471,7 @@ a case, the `remote` declaration stops compiling.
 | The generator program | one `use` and one call to `wit_reflect::tasks::run` |
 | The component crate's `include!`, bindings call, `mod` and `export!` | 6 lines |
 | Conversions and wire records for types of other crates | a few lines per foreign type |
+| The representation map and its setting | 1 declaration with 4 entries, 1 line in `Cargo.toml` |
 | Cargo wiring: dependencies and, if wanted, a default-off feature for the macros | a few lines |
 | The implementation of a world's imports | — |
 | The jco configuration, including which exports are asynchronous | — |
@@ -615,7 +666,9 @@ error[E0277]: `u32` cannot be assembled from the wire parts `std::string::String
 
 1. Derive `WitType` on each type an operation returns or takes; the compiler
    then points at every type it reaches that still needs it.
-2. Add a rule where the compiler reports a field without a WIT representation.
+2. Where the compiler reports a field without a WIT representation, add its
+   type to the crate's map if it belongs to another crate, or a rule if the
+   value depends on that one field.
 3. Derive `WitResource` on each resource and name its exported functions in
    `#[exports(…)]` on their `impl` blocks.
 4. State the interface on each type an interface has to own, on each resource

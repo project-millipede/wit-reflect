@@ -156,6 +156,8 @@ impl Settings {
         let wit = entries.string("wit");
         let bindings = entries.string("bindings");
         let forwarding = entries.string("forwarding");
+        // Read by the derive, not by the tasks: the crate's representation map.
+        entries.string("representations");
         entries.finish();
 
         let exports = parse_exports(export_values, &mut problems);

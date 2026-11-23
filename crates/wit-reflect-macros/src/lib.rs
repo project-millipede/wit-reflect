@@ -16,6 +16,7 @@ mod names;
 mod operation;
 mod representations;
 mod resource;
+mod setting;
 
 use proc_macro::TokenStream;
 
