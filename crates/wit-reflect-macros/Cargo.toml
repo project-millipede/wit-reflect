@@ -1,10 +1,15 @@
 [package]
 name = "wit-reflect-macros"
-description = "Derive macro for wit-reflect."
+description = "Procedural macros for wit-reflect: the WitType, WitResource and FromParts derives, the export, exports and named attributes, and the representations! and operation! macros. Depend on wit-reflect, which re-exports them."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+publish = true
 
 [lib]
 proc-macro = true

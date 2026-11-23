@@ -11,6 +11,11 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/project-millipede/wit-reflect"
+keywords = ["wit", "wasm", "component-model", "bindings", "codegen"]
+categories = ["wasm", "development-tools"]
+# The two library crates state `publish = true`; the fixtures inherit this.
 publish = false
 
 # Libraries declare compatible ranges; the committed Cargo.lock records the
@@ -26,8 +31,9 @@ syn = { version = "3", features = ["full"] }
 thiserror = "2"
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 wit-parser = "0.261"
-wit-reflect = { path = "crates/wit-reflect" }
-wit-reflect-macros = { path = "crates/wit-reflect-macros" }
+wit-reflect = { version = "0.1.0", path = "crates/wit-reflect" }
+# The two crates are released together, so the runtime names exactly its macros.
+wit-reflect-macros = { version = "=0.1.0", path = "crates/wit-reflect-macros" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

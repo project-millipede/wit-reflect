@@ -1,10 +1,18 @@
 [package]
 name = "wit-reflect"
-description = "Reflect ordinary Rust types into validated WIT packages."
+description = "Derive a WebAssembly component boundary from ordinary Rust: the WIT contract, the wit-bindgen configuration, the conversions and the forwarding, with no handwritten wire types."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+publish = true
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["derive"]

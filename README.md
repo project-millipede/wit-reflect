@@ -22,8 +22,17 @@ WITGenstein and Fidius each needed a handwritten copy of the data model before
 they could produce a contract. This library removes that copy: the owner types
 are the only definition, and each item states its own part of the contract.
 
-It depends on none of the three. Their checkouts next to this folder are
-read-only references.
+It depends on none of the three.
+
+## Install
+
+```toml
+[dependencies]
+wit-reflect = "0.1"
+```
+
+A crate that should build without this library puts it behind a feature of
+its own; see [Keeping an owner crate independent](#keeping-an-owner-crate-independent).
 
 ## Example
 
@@ -426,3 +435,7 @@ cargo run -p session-owner --bin generate -- --check
 - More than one contract per generator program when it is declared by marks,
   and types of external interfaces declared by marks. Both work with a schema
   program.
+
+## License
+
+Licensed under the [MIT license](LICENSE-MIT).
