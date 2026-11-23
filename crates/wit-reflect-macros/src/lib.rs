@@ -14,6 +14,7 @@ mod from_parts;
 mod named;
 mod names;
 mod operation;
+mod representations;
 mod resource;
 
 use proc_macro::TokenStream;
@@ -95,6 +96,17 @@ pub fn named(arguments: TokenStream, item: TokenStream) -> TokenStream {
             let compile_error = error.into_compile_error();
             quote::quote! { #item #compile_error }.into()
         }
+    }
+}
+
+/// Declares a crate's map of foreign representations. See the re-export in
+/// `wit-reflect`.
+#[proc_macro]
+pub fn representations(input: TokenStream) -> TokenStream {
+    let expansion = representations::expand(input.into());
+    match expansion {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.into_compile_error().into(),
     }
 }
 

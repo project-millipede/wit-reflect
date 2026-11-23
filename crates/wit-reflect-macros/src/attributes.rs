@@ -52,6 +52,8 @@ pub(crate) struct ContainerAttributes {
     pub(crate) public_path: Option<Path>,
     /// `skip(a, b)`: fields that are not exported, named on the item.
     pub(crate) skipped_fields: Vec<Ident>,
+    /// `map = path`: the representation map this item's fields are looked up in.
+    pub(crate) map: Option<Path>,
 }
 
 /// A field of the wire record computed from the whole value.
@@ -132,6 +134,13 @@ impl ContainerAttributes {
                     parsed.skipped_fields.push(field);
                     Ok(())
                 })
+            } else if meta.path.is_ident("map") {
+                if parsed.map.is_some() {
+                    return Err(meta.error("`map` is given more than once"));
+                }
+                let map = meta.value()?.parse()?;
+                parsed.map = Some(map);
+                Ok(())
             } else if meta.path.is_ident("cases") {
                 set_string(&mut parsed.cases, &meta)
             } else if meta.path.is_ident("remote") {
@@ -154,7 +163,7 @@ impl ContainerAttributes {
             } else {
                 Err(meta.error(
                     "expected `name`, `interface`, `transparent`, `field`, `display`, `skip`, \
-                     `cases`, `remote`, `convert`, `path` or `crate`",
+                     `map`, `cases`, `remote`, `convert`, `path` or `crate`",
                 ))
             }
         });

@@ -385,6 +385,11 @@ pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 /// `#[non_exhaustive]`, cannot be declared this way; convert it with `into`
 /// or `with` instead.
 ///
+/// A foreign type that several fields hold needs the same rule on each of
+/// them. [`representations!`](macro@representations) states it once for the
+/// crate instead. `#[wit(map = path)]` on an item names the map its fields
+/// without a rule are looked up in. A generic item cannot use a map.
+///
 /// # Crossing unchanged
 ///
 /// The derive lets a type cross without conversion when generated bindings
@@ -517,6 +522,55 @@ pub use wit_reflect_macros::exports;
 /// compile error.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::named;
+
+/// Declares a crate's map of representations: how each type of another
+/// crate is shown in the contract.
+///
+/// A field of a foreign type needs a rule, and the same type needs the same
+/// rule wherever it appears. The map states that fact once:
+///
+/// ```text
+/// wit_reflect::representations! {
+///     /// The contract's form of each foreign type the reports hold.
+///     pub(crate) Representations {
+///         object {
+///             object::Endianness => Endianness,
+///             object::macho::FileType => MachoValue,
+///             object::macho::Version => DisplayText,
+///         }
+///         std {
+///             std::io::Error => DisplayText,
+///         }
+///     }
+/// }
+/// ```
+///
+/// It defines the unit struct `Representations`. Each entry `Foreign => Shown`
+/// says that the contract shows `Foreign` as the type `Shown`, and needs
+/// `Shown: From<Foreign>`; a missing conversion is a compile error at the
+/// entry. [`rule::DisplayText`] is the shown type for a value's `Display`
+/// text.
+///
+/// Entries stand in groups named after the crate their types come from, and
+/// an entry's path must begin with its group's name. The groups do nothing
+/// else; they keep a growing map ordered.
+///
+/// An item uses the map through `#[wit(map = Representations)]`. Each of its
+/// fields without a rule is then shown as the map's entry for the field's
+/// type, or as the type itself if the map has none:
+///
+/// - A rule on a field takes precedence over the map.
+/// - An entry for `T` also covers `Option<T>` and `Vec<T>`.
+/// - Case payloads and the fields of struct-like cases are covered like the
+///   fields of a struct.
+/// - A type without an entry and without a derive is a compile error, as it
+///   is without a map. Nothing is covered that the map does not name.
+/// - A type whose fields have no entry crosses as it would without a map.
+///
+/// The compiler makes the choice for each field. Nothing is looked up when a
+/// value crosses.
+#[cfg(feature = "derive")]
+pub use wit_reflect_macros::representations;
 
 /// Refers to the reflected signature of a function marked with
 /// [`macro@export`], for [`InterfaceBuilder::function`] and

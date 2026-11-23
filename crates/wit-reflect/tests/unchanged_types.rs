@@ -13,6 +13,7 @@
 
 use wit_reflect::WitType;
 use wit_reflect::lower::{Lower, Passage};
+use wit_reflect::rule::DisplayText;
 
 #[derive(Clone, Copy, Debug, WitType)]
 pub enum Kind {
@@ -60,6 +61,30 @@ pub struct Counted {
     pub count: usize,
 }
 
+wit_reflect::representations! {
+    pub Shown {
+        std {
+            std::net::Ipv4Addr => DisplayText,
+        }
+    }
+}
+
+// The map has an entry for the field's type: the binding holds a string where
+// this type holds an address.
+#[derive(Clone, Debug, WitType)]
+#[wit(map = Shown)]
+pub struct Covered {
+    pub address: std::net::Ipv4Addr,
+}
+
+// The map has no entry for either field's type, so it changes nothing.
+#[derive(Clone, Debug, WitType)]
+#[wit(map = Shown)]
+pub struct Uncovered {
+    pub name: String,
+    pub kind: Kind,
+}
+
 #[derive(Clone, Debug, WitType)]
 pub struct Renamed {
     #[wit(name = "identifier")]
@@ -100,6 +125,8 @@ fn a_type_crosses_unchanged_only_if_the_bindings_can_use_it_as_it_is() {
     assert!(crosses_unchanged::<Entry>());
     assert!(crosses_unchanged::<Vec<Option<Entry>>>());
     assert!(crosses_unchanged::<Result<Entry, Kind>>());
+    // A map that names none of its field types leaves a type as it was.
+    assert!(crosses_unchanged::<Uncovered>());
 
     // The discriminant is not the case's position.
     assert!(!crosses_unchanged::<Numbered>());
@@ -110,6 +137,7 @@ fn a_type_crosses_unchanged_only_if_the_bindings_can_use_it_as_it_is() {
     // A value or a name that differs from what is stored.
     assert!(!crosses_unchanged::<Ruled>());
     assert!(!crosses_unchanged::<Counted>());
+    assert!(!crosses_unchanged::<Covered>());
     assert!(!crosses_unchanged::<Renamed>());
     // wit-bindgen cannot map a generic type, even one holding unchanged values.
     assert!(!crosses_unchanged::<Carrier<Entry>>());

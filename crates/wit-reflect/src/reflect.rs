@@ -37,7 +37,9 @@ use crate::types::Type;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no WIT representation",
     label = "cannot cross a WIT boundary as written",
-    note = "derive `wit_reflect::WitType` on the struct or enum that owns this data"
+    note = "derive `wit_reflect::WitType` on the struct or enum that owns this data",
+    note = "for a type of another crate, put a rule on the field or add the type to the \
+            crate's `wit_reflect::representations!` map"
 )]
 pub trait WitType: 'static {
     /// Describe this type as a WIT type expression.

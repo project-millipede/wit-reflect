@@ -9,6 +9,7 @@
 use std::error::Error;
 use std::fmt;
 
+use wit_reflect::rule::DisplayText;
 use wit_reflect::{Schema, WitType};
 
 mod foreign {
@@ -279,5 +280,121 @@ fn ruled_owner_types_render_their_declared_wire_shapes() -> Result<(), Box<dyn E
     let rendered_wit = package.to_string();
 
     assert_eq!(rendered_wit, EXPECTED_RULES_WIT);
+    Ok(())
+}
+
+// ---- A map: the representation of each foreign type, declared once.
+
+wit_reflect::representations! {
+    Representations {
+        foreign {
+            foreign::Endianness => Endianness,
+            foreign::FileType => MachoValue,
+            foreign::Version => DisplayText,
+        }
+        std {
+            std::io::Error => DisplayText,
+        }
+    }
+}
+
+// Another form of a version, for the one field that should not be text.
+#[derive(WitType)]
+struct VersionParts {
+    major: u16,
+    minor: u8,
+}
+
+impl From<foreign::Version> for VersionParts {
+    fn from(version: foreign::Version) -> Self {
+        Self {
+            major: version.major,
+            minor: version.minor,
+        }
+    }
+}
+
+#[derive(WitType)]
+#[wit(map = Representations)]
+struct MappedImage {
+    endianness: foreign::Endianness,
+    previous: Option<foreign::Endianness>,
+    file_types: Vec<foreign::FileType>,
+    minimum_os: foreign::Version,
+    // A rule on the field takes precedence over the map's entry for its type.
+    #[wit(into = VersionParts)]
+    sdk: foreign::Version,
+    // The map has no entry for this type, so it is shown as itself.
+    header_flags: u32,
+}
+
+#[derive(WitType)]
+#[wit(map = Representations)]
+enum MappedError {
+    Read(std::io::Error),
+    Unsupported {
+        version: foreign::Version,
+        file_type: foreign::FileType,
+    },
+    Cancelled,
+}
+
+const EXPECTED_MAPPED_WIT: &str = "\
+package example:mapped@0.1.0;
+
+interface mapped {
+  enum endianness {
+    little,
+    big,
+  }
+
+  record macho-value {
+    value: u32,
+    name: option<string>,
+  }
+
+  record version-parts {
+    major: u16,
+    minor: u8,
+  }
+
+  record mapped-image {
+    endianness: endianness,
+    previous: option<endianness>,
+    file-types: list<macho-value>,
+    minimum-os: string,
+    sdk: version-parts,
+    header-flags: u32,
+  }
+
+  record mapped-error-unsupported {
+    version: string,
+    file-type: macho-value,
+  }
+
+  variant mapped-error {
+    read(string),
+    unsupported(mapped-error-unsupported),
+    cancelled,
+  }
+}
+";
+
+/// A map states once how a foreign type is shown. Every field of such a type
+/// must then take that form without a rule of its own: as a field, inside
+/// `Option` and `Vec`, as a case payload and in a struct-like case. A rule on
+/// a field still wins, and a type the map does not name is left alone. A
+/// field that silently took another form would change the contract.
+#[test]
+fn a_declared_map_represents_foreign_types_wherever_they_appear() -> Result<(), Box<dyn Error>> {
+    let mut schema = Schema::new("example:mapped@0.1.0".parse()?);
+    schema
+        .interface("mapped")
+        .define::<MappedImage>()
+        .define::<MappedError>();
+
+    let rendered_wit = schema.resolve()?.to_string();
+
+    assert_eq!(rendered_wit, EXPECTED_MAPPED_WIT);
     Ok(())
 }

@@ -8,7 +8,8 @@
 //! Unsupported shapes are rejected while planning, at the declaration.
 
 use proc_macro2::{TokenStream, TokenTree};
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
+use syn::spanned::Spanned;
 use syn::{
     Data, DataEnum, DataStruct, DeriveInput, Field, Fields, FieldsNamed, Generics, Ident, LitStr,
     Path, Variant, parse_quote,
@@ -26,7 +27,11 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let runtime = runtime_path(container.crate_path.as_ref());
     reject_lifetimes(&input.generics, &mut errors);
     reject_self_reference(input, &mut errors);
-    let shape = Shape::plan(input, &container, &mut errors);
+    let mut shape = Shape::plan(input, &container, &mut errors);
+    let map = item_map(input, &container, &mut errors);
+    if let (Some(planned_shape), Some(map)) = (&mut shape, &map) {
+        planned_shape.look_up_in(map);
+    }
     let remote_conversion = match &container.remote {
         Some(remote) => remote_conversion(input, remote, &mut errors),
         None => TokenStream::new(),
@@ -54,7 +59,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         parts,
         body,
         identity_assembly,
-    } = crossing.code(&shape, ident, &container, &runtime);
+    } = crossing.code(&shape, ident, &container, &runtime, map.as_ref());
 
     let reflected_generics = with_bounds(&input.generics, &quote! { #runtime::WitType });
     let (reflect_impl, type_generics, reflect_where) = reflected_generics.split_for_impl();
@@ -111,6 +116,46 @@ pub(crate) fn interface_registration(
         runtime,
         &quote! { schema.interface(#interface).#declare::<#ident>(); },
     )
+}
+
+/// The representation map the item's fields are looked up in, if any.
+///
+/// The lookup is a constant expression, which cannot mention a type
+/// parameter. A generic item therefore uses no map; naming one on it is an
+/// error, so that the fields are not silently left out of it.
+fn item_map(
+    input: &DeriveInput,
+    container: &ContainerAttributes,
+    errors: &mut Errors,
+) -> Option<Path> {
+    let is_generic = !input.generics.params.is_empty();
+    match (&container.map, is_generic) {
+        (Some(map), true) => {
+            errors.report(
+                map,
+                "a generic item cannot use a map: its field types may be type parameters; \
+                 put a rule on the fields that need one",
+            );
+            None
+        }
+        (Some(map), false) => Some(map.clone()),
+        (None, _) => None,
+    }
+}
+
+/// The field's wire form as the map decides it: `<Is<{…}> as Choose<Map, F>>`.
+///
+/// The constant asks whether the map has an entry for the field's type. The
+/// answer selects the entry or the type itself. The tokens carry the field
+/// type's location, so a type without either is reported at the field.
+fn selection(map: &Path, field_type: &syn::Type, runtime: &Path) -> TokenStream {
+    quote_spanned! {field_type.span()=>
+        <#runtime::lower::Is<{
+            #[allow(unused_imports, reason = "used only when the inherent constant is absent")]
+            use #runtime::rule::NotDeclared as _;
+            <#runtime::rule::Declared<#map, #field_type>>::BY_MAP
+        }> as #runtime::rule::Choose<#map, #field_type>>
+    }
 }
 
 /// How the derive lets a type cross, from what it can see on the item alone.
@@ -190,6 +235,7 @@ impl<'input> Crossing<'input> {
         ident: &Ident,
         container: &ContainerAttributes,
         runtime: &Path,
+        map: Option<&Path>,
     ) -> CrossingCode {
         let lower = quote! { #runtime::lower };
         let field_types = match self {
@@ -219,9 +265,14 @@ impl<'input> Crossing<'input> {
         };
         // Unchanged only if every field type is, too.
         let passage = field_types.iter().rev().fold(usable, |rest, field_type| {
-            quote! {
-                <<#field_type as #lower::Lower>::Passage as #lower::Passage>::And<#rest>
-            }
+            let field_passage = match map {
+                Some(map) => {
+                    let selection = selection(map, field_type, runtime);
+                    quote_spanned! {field_type.span()=> #selection::Passage }
+                }
+                None => quote! { <#field_type as #lower::Lower>::Passage },
+            };
+            quote! { <#field_passage as #lower::Passage>::And<#rest> }
         });
         CrossingCode {
             passage,
@@ -378,6 +429,8 @@ struct FieldPlan<'input> {
     /// Whether `name = "…"` replaces the name derived from the identifier.
     is_renamed: bool,
     rule: Option<FieldRule>,
+    /// The representation map a field without a rule is looked up in.
+    map: Option<Path>,
 }
 
 struct CasePlan<'input> {
@@ -425,6 +478,28 @@ impl<'input> Shape<'input> {
             Data::Union(data) => {
                 errors.report(data.union_token, "a union has no WIT representation");
                 None
+            }
+        }
+    }
+
+    /// Look every field without a rule up in `map`.
+    fn look_up_in(&mut self, map: &Path) {
+        let fields: Vec<&mut FieldPlan<'input>> = match self {
+            Self::Record(fields) => fields.iter_mut().collect(),
+            Self::Transparent(field) => vec![field],
+            Self::Enum(cases) => cases
+                .iter_mut()
+                .flat_map(|case| match &mut case.payload {
+                    CasePayload::Unit => Vec::new(),
+                    CasePayload::Tuple(fields) | CasePayload::Record { fields, .. } => {
+                        fields.iter_mut().collect()
+                    }
+                })
+                .collect(),
+        };
+        for field in fields {
+            if field.rule.is_none() {
+                field.map = Some(map.clone());
             }
         }
     }
@@ -866,7 +941,14 @@ impl<'input> FieldPlan<'input> {
             name,
             is_renamed: attributes.name.is_some(),
             rule: attributes.rule.map(|declared| declared.rule),
+            map: None,
         }
+    }
+
+    /// The field's wire form as its map decides it, for a field that has one.
+    fn selection(&self, runtime: &Path) -> Option<TokenStream> {
+        let map = self.map.as_ref()?;
+        Some(selection(map, &self.field.ty, runtime))
     }
 
     fn is_skipped(&self) -> bool {
@@ -889,9 +971,12 @@ impl<'input> FieldPlan<'input> {
     fn reflection(&self, runtime: &Path) -> TokenStream {
         let field_type = &self.field.ty;
         match &self.rule {
-            None | Some(FieldRule::Skip) => {
-                quote! { <#field_type as #runtime::WitType>::wit_type(graph) }
-            }
+            None | Some(FieldRule::Skip) => match self.selection(runtime) {
+                Some(selection) => quote_spanned! {field_type.span()=>
+                    <#selection::Wire as #runtime::WitType>::wit_type(graph)
+                },
+                None => quote! { <#field_type as #runtime::WitType>::wit_type(graph) },
+            },
             Some(FieldRule::Display) => quote! { #runtime::rule::display::<#field_type>(graph) },
             Some(FieldRule::Widen) => quote! { #runtime::rule::widened::<#field_type>(graph) },
             Some(FieldRule::Into {
@@ -910,7 +995,12 @@ impl<'input> FieldPlan<'input> {
         let lower = quote! { #runtime::lower::Lower };
         let field_type = &self.field.ty;
         match &self.rule {
-            None | Some(FieldRule::Skip) => quote! { <#field_type as #lower>::Parts },
+            None | Some(FieldRule::Skip) => match self.selection(runtime) {
+                Some(selection) => {
+                    quote_spanned! {field_type.span()=> <#selection::Wire as #lower>::Parts }
+                }
+                None => quote! { <#field_type as #lower>::Parts },
+            },
             Some(FieldRule::Display) => quote! { ::std::string::String },
             Some(FieldRule::Widen) => quote! {
                 <<#field_type as #runtime::rule::Widen>::Wire as #lower>::Parts
@@ -977,7 +1067,12 @@ impl<'input> FieldPlan<'input> {
         let binding = &self.binding;
         let field_type = &self.field.ty;
         match &self.rule {
-            None | Some(FieldRule::Skip) => quote! { #lower::lower(#binding) },
+            None | Some(FieldRule::Skip) => match self.selection(runtime) {
+                Some(selection) => quote_spanned! {field_type.span()=>
+                    #lower::lower(#selection::choose(#binding))
+                },
+                None => quote! { #lower::lower(#binding) },
+            },
             Some(FieldRule::Display) => quote! { ::std::string::ToString::to_string(&#binding) },
             Some(FieldRule::Widen) => quote! {
                 #lower::lower(<#field_type as #runtime::rule::Widen>::widen(#binding))
