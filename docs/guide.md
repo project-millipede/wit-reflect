@@ -74,10 +74,9 @@ pub enum InspectionFailure {
 #[wit(interface = "native")]
 pub struct Session { /* fields are not exported */ }
 
-#[exports]
+#[exports(select, selection, inspect, progress)]
 impl Session {
     /// Inspect `resource`. It must be the current selection.
-    #[export]
     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
 
     fn analyze(&self, resource: &str) -> Result<Report, InspectionFailure> { /* not exported */ }
@@ -88,10 +87,17 @@ impl Session {
 pub fn create_session() -> Session { /* … */ }
 ```
 
-`#[export]` does not change the function. It reflects its signature.
-`#[exports]` on the block registers the marked functions with their resource.
-It is a mark of its own because an attribute on a function can only add to its
-`impl` block, and a registration is a separate item.
+`#[exports(…)]` names the functions of the block that are exported. It does
+not change them: it reflects their signatures and registers them with their
+resource. A name that is not a function of the block is a compile error.
+
+What is exported is always stated. It does not follow from `pub` or from how
+functions are grouped into blocks: a block may hold public functions that are
+not in the contract, and the contract does not shape the Rust code.
+
+A function can carry the mark itself instead, `#[export]`, in a block marked
+with a plain `#[exports]`. A free function always does, and so does a function
+without `self` that is a `static` function or a `constructor`.
 
 ### 3. State what the items cannot
 
@@ -281,7 +287,7 @@ WIT directory, and any other `wit_bindgen::generate!` option except `world`.
 | --- | --- | --- |
 | `#[wit(interface = "…")]` | a derived type or resource | The interface defines it. |
 | `#[export(interface = "…")]` | a free function | The interface exports it. |
-| `#[exports]` | an `impl` block | Its functions marked `#[export]` are exported from the resource. |
+| `#[exports(a, b)]` | an `impl` block | The named functions are exported from the resource. A plain `#[exports]` exports the functions marked `#[export]`. |
 | `#[named]` | a type alias | The instantiation is named after the alias, in kebab case. |
 | `package`, `world` | `[package.metadata.wit-reflect]` | The package and the world's name. |
 | `imports`, `exports` | the same table | The world's items. `{ interface = "…", name = "…" }` gives an export its own name. |
@@ -395,7 +401,7 @@ a case, the `remote` declaration stops compiling.
 
 | Not generated: you write it | Size in the fixture |
 | --- | --- |
-| The marks that place and name: `interface`, `#[exports]`, `#[named]` | 7 marks |
+| The marks that place and name: `interface`, `#[exports(…)]`, `#[named]` | 7 marks |
 | The contract settings in `Cargo.toml` | 4 lines |
 | The generator program | one `use` and one call to `wit_reflect::tasks::run` |
 | The component crate's `include!`, bindings call, `mod` and `export!` | 6 lines |
@@ -595,8 +601,8 @@ error[E0277]: `u32` cannot be assembled from the wire parts `std::string::String
 1. Derive `WitType` on each type an operation returns or takes; the compiler
    then points at every type it reaches that still needs it.
 2. Add a rule where the compiler reports a field without a WIT representation.
-3. Derive `WitResource` on each resource, mark its functions with `#[export]`
-   and their `impl` blocks with `#[exports]`.
+3. Derive `WitResource` on each resource and name its exported functions in
+   `#[exports(…)]` on their `impl` blocks.
 4. State the interface on each type an interface has to own, on each resource
    and on each exported free function. Mark an alias of each generic
    instantiation with `#[named]`.

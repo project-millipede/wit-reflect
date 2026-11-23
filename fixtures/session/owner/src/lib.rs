@@ -287,16 +287,14 @@ pub struct Session {
     last_step: Option<StepKind>,
 }
 
-#[exports]
+#[exports(select, selection, inspect, progress)]
 impl Session {
     /// Remember `resource` as the current selection.
-    #[export]
     pub fn select(&mut self, resource: &str) {
         self.selection = Some(resource.to_owned());
     }
 
     /// The current selection, if any.
-    #[export]
     #[must_use]
     pub fn selection(&self) -> Option<String> {
         self.selection.clone()
@@ -305,7 +303,6 @@ impl Session {
     /// Inspect `resource`. It must be the current selection.
     // The names `truncated` and `undecodable` stand for inputs that fail
     // analysis; every other selected name is inspected successfully.
-    #[export]
     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome {
         self.inspections += 1;
         self.last_step = Some(StepKind::Inspect);
@@ -327,7 +324,6 @@ impl Session {
     }
 
     /// The last step and the number of inspections so far.
-    #[export]
     #[must_use]
     pub fn progress(&self) -> Progress {
         Progress {

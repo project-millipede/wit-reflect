@@ -3,13 +3,17 @@
 //! `#[export]` on a method cannot register the method. A registration is an
 //! item of its own, and an attribute on a method can only add associated
 //! items to its block. The attribute on the block sees the type and every
-//! marked function, so it emits one registration for all of them.
+//! function, so it emits one registration for all exported ones.
+//!
+//! A function is exported when the attribute lists its name or the function
+//! carries `#[export]` itself. A listed function is given that mark here, so
+//! both forms are reflected and checked by the same code.
 
 use proc_macro2::{TokenStream, TokenTree};
 use quote::{ToTokens, quote};
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Ident, ImplItem, ImplItemFn, ItemImpl, Meta, Path, Token, Type};
+use syn::{Attribute, Ident, ImplItem, ImplItemFn, ItemImpl, Meta, Path, Token, Type, parse_quote};
 
 use crate::attributes::Errors;
 use crate::names::{companion_ident, public_path, registration, runtime_path};
@@ -17,6 +21,8 @@ use crate::names::{companion_ident, public_path, registration, runtime_path};
 /// `#[exports(...)]` arguments.
 #[derive(Default)]
 struct ExportsOptions {
+    /// The functions named in the attribute, in the order written.
+    listed: Vec<Ident>,
     /// `path = …`: where the component crate can name the type.
     public_path: Option<Path>,
     crate_path: Option<Path>,
@@ -26,7 +32,14 @@ impl ExportsOptions {
     fn parse(arguments: TokenStream) -> syn::Result<Self> {
         let mut options = Self::default();
         let parser = syn::meta::parser(|meta| {
-            if meta.path.is_ident("path") {
+            // An option has a value. A bare name is a function of the block,
+            // also when the function is called `path`.
+            let is_option = meta.input.peek(Token![=]);
+            if !is_option {
+                let function = meta.path.require_ident()?.clone();
+                options.listed.push(function);
+                Ok(())
+            } else if meta.path.is_ident("path") {
                 let public_path = meta.value()?.parse()?;
                 options.public_path = Some(public_path);
                 Ok(())
@@ -35,7 +48,7 @@ impl ExportsOptions {
                 options.crate_path = Some(crate_path);
                 Ok(())
             } else {
-                Err(meta.error("expected `path` or `crate`"))
+                Err(meta.error("expected `path = …` or `crate = …`"))
             }
         });
         parser.parse2(arguments)?;
@@ -43,7 +56,7 @@ impl ExportsOptions {
     }
 }
 
-/// A function of the block marked with `#[export]`.
+/// A function of the block that is exported.
 struct MarkedFunction<'block> {
     ident: &'block Ident,
     /// The `cfg` predicates under which the function is compiled and marked.
@@ -52,10 +65,11 @@ struct MarkedFunction<'block> {
 
 pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<TokenStream> {
     let options = ExportsOptions::parse(arguments)?;
-    let block: ItemImpl = syn::parse2(item.clone())?;
+    let mut block: ItemImpl = syn::parse2(item.clone())?;
     let runtime = runtime_path(options.crate_path.as_ref());
 
     let mut errors = Errors::default();
+    mark_listed_functions(&mut block, &options, &runtime, &mut errors);
     if let Some((trait_path, _)) = &block.trait_ {
         errors.report(
             trait_path,
@@ -74,7 +88,8 @@ pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<
     if marked_functions.is_empty() {
         errors.report(
             &block.self_ty,
-            "no function of this block is marked with `#[export]`",
+            "this block exports nothing; list its exported functions in `exports(…)` \
+             or mark them with `#[export]`",
         );
     }
     errors.finish()?;
@@ -105,10 +120,49 @@ pub(crate) fn expand(arguments: TokenStream, item: &TokenStream) -> syn::Result<
     });
     let registration = registration(&runtime, &quote! { #(#declarations)* });
     Ok(quote! {
-        #item
+        #block
 
         #registration
     })
+}
+
+/// Give every function the attribute lists the `#[export]` mark.
+///
+/// From here on a listed function is handled like one marked by hand: the
+/// mark reflects its signature and reports a signature that cannot be
+/// exported at the function itself.
+fn mark_listed_functions(
+    block: &mut ItemImpl,
+    options: &ExportsOptions,
+    runtime: &Path,
+    errors: &mut Errors,
+) {
+    let export_mark: Attribute = match &options.crate_path {
+        Some(crate_path) => parse_quote!(#[#runtime::export(crate = #crate_path)]),
+        None => parse_quote!(#[#runtime::export]),
+    };
+    for listed in &options.listed {
+        let function = block.items.iter_mut().find_map(|item| match item {
+            ImplItem::Fn(function) if function.sig.ident == *listed => Some(function),
+            _ => None,
+        });
+        let Some(function) = function else {
+            errors.report(listed, "this block has no function of that name");
+            continue;
+        };
+        let is_marked = function.attrs.iter().any(|attribute| {
+            names_export(attribute.path()) || export_in_cfg_attr(attribute).is_some()
+        });
+        if is_marked {
+            errors.report(
+                listed,
+                "this function already carries a mark of its own; \
+                 list it or mark it, not both",
+            );
+            continue;
+        }
+        function.attrs.insert(0, export_mark.clone());
+    }
 }
 
 /// The name of the type the block implements, when it is a plain path.
@@ -169,11 +223,10 @@ fn export_conditions(function: &ImplItemFn, errors: &mut Errors) -> Option<Vec<T
         } else if names_export(attribute.path()) {
             is_marked = true;
             require_resource_function(function, &attribute.meta, errors);
-        } else if attribute.path().is_ident("cfg_attr") {
-            if let Some(condition) = conditional_export(function, attribute, errors) {
-                conditions.push(condition);
-                is_marked = true;
-            }
+        } else if let Some((condition, export)) = export_in_cfg_attr(attribute) {
+            conditions.push(condition);
+            is_marked = true;
+            require_resource_function(function, &export, errors);
         }
     }
     is_marked.then_some(conditions)
@@ -185,20 +238,18 @@ fn names_export(path: &Path) -> bool {
         .is_some_and(|segment| segment.ident == "export")
 }
 
-/// The predicate of `#[cfg_attr(predicate, …, export, …)]`.
-fn conditional_export(
-    function: &ImplItemFn,
-    attribute: &Attribute,
-    errors: &mut Errors,
-) -> Option<TokenStream> {
+/// The predicate and the mark of `#[cfg_attr(predicate, …, export, …)]`.
+fn export_in_cfg_attr(attribute: &Attribute) -> Option<(TokenStream, Meta)> {
+    if !attribute.path().is_ident("cfg_attr") {
+        return None;
+    }
     let entries = attribute
         .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
         .ok()?;
-    let mut entries = entries.iter();
+    let mut entries = entries.into_iter();
     let predicate = entries.next()?;
     let export = entries.find(|entry| names_export(entry.path()))?;
-    require_resource_function(function, export, errors);
-    Some(predicate.to_token_stream())
+    Some((predicate.to_token_stream(), export))
 }
 
 /// A function without `self` belongs to the resource only as a `static`

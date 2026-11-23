@@ -441,34 +441,46 @@ pub use wit_reflect_macros::WitResource;
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::export;
 
-/// Registers the functions of an `impl` block that are marked with
-/// [`macro@export`], for [`Schema::from_registry`].
+/// Registers the exported functions of an `impl` block, for
+/// [`Schema::from_registry`].
 ///
 /// ```text
-/// #[wit_reflect::exports]
+/// #[wit_reflect::exports(select, inspect)]
 /// impl Session {
-///     #[export]
+///     pub fn select(&mut self, resource: &str) { /* … */ }
+///
 ///     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
 ///
-///     fn analyze(&self, resource: &str) -> Report { /* not exported */ }
+///     pub fn read_at(&mut self, offset: u64) -> Vec<u8> { /* public, not exported */ }
 /// }
 /// ```
 ///
-/// The functions are exported from the interface that declares the resource,
-/// in the order they are written. A resource may have several marked blocks.
+/// The attribute names the functions that are exported. Each one is reflected
+/// as [`macro@export`] reflects it, so the same signatures are accepted and
+/// rejected. What is exported never follows from `pub` or from the layout of
+/// the block; a name that is not a function of the block is a compile error.
 ///
-/// The mark belongs on the block because `#[export]` on a function cannot
-/// register anything: a registration is an item of its own, and an attribute
-/// on a function can only add to its `impl` block. A function marked
+/// A function may carry [`macro@export`] itself instead of being listed. That
+/// is the form for a function without `self`, which needs
+/// `#[export(static)]` or `#[export(constructor)]`. A function marked
 /// `#[cfg_attr(predicate, export)]` is registered under the same predicate.
+/// Listing and marking the same function is an error.
+///
+/// The functions are exported from the interface that declares the resource,
+/// in the order they are written in the block. A resource may have several
+/// marked blocks.
+///
+/// The attribute belongs on the block because one on a function cannot
+/// register anything: a registration is an item of its own, and an attribute
+/// on a function can only add to its `impl` block.
 ///
 /// Generated forwarding code names the resource at the root of its crate,
 /// `owner::Session`; `#[exports(path = owner::module::Session)]` names another
 /// place. `#[exports(crate = path)]` names this crate when it is re-exported
 /// elsewhere.
 ///
-/// A block without a marked function, a trait implementation and a generic
-/// block are compile errors.
+/// A block that exports nothing, a trait implementation and a generic block
+/// are compile errors.
 #[cfg(feature = "derive")]
 pub use wit_reflect_macros::exports;
 

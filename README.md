@@ -117,9 +117,8 @@ pub type InspectionOutcome = Outcome<InspectionStepOutcome>;
 #[wit(interface = "native")]
 pub struct Session { /* … */ }
 
-#[wit_reflect::exports]              // registers the functions marked below
+#[wit_reflect::exports(inspect)]     // the functions of this block that are exported
 impl Session {
-    #[export]
     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
 }
 ```
@@ -254,10 +253,13 @@ Rules worth knowing:
 - **Each type has one owning interface.** A declared type belongs where it is
   declared. An undeclared dependency belongs to the only interface that reaches
   it. A type reached from two interfaces must be declared in one of them.
-- **Operations are exported deliberately.** `#[export]` only reflects a
-  signature. A method joins the contract when its `impl` block is marked
-  `#[exports]` or a schema lists it, so methods from several blocks combine
-  and unmarked ones stay private.
+- **Operations are exported deliberately.** A method joins the contract when
+  `#[exports(…)]` on its `impl` block names it, when it is marked `#[export]`
+  in a block marked `#[exports]`, or when a schema lists it. Methods from
+  several blocks combine.
+- **The contract does not shape the code.** Whether a function or field is
+  exported never follows from `pub` or from how an `impl` block is laid out.
+  It is stated, and every field crosses unless a rule skips it.
 - **Registrations need their crate linked.** Rust links a dependency only if
   the program names it. A generator writes `use owner as _;`; with nothing
   registered it fails instead of generating an empty contract.
@@ -288,9 +290,8 @@ To keep an owner crate's ordinary build free of this library, gate the macros:
 #[cfg_attr(feature = "wit", derive(wit_reflect::WitType))]
 pub struct BinaryReport { /* fields */ }
 
-#[cfg_attr(feature = "wit", wit_reflect::exports)]
+#[cfg_attr(feature = "wit", wit_reflect::exports(inspect))]
 impl Session {
-    #[cfg_attr(feature = "wit", wit_reflect::export)]
     pub fn inspect(&mut self, resource: &str) -> InspectionOutcome { /* … */ }
 }
 ```
