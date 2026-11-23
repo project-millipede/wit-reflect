@@ -1,6 +1,6 @@
 # Definitions and phases
 
-**Status: Phases 1 to 7 implemented, 2026-11-21.**
+**Status: Phases 1 to 8 implemented, 2026-11-23.**
 
 The goal is the generation model required by the generator comparison:
 
@@ -526,6 +526,66 @@ Examined and not adopted, 2026-11-21:
   no mark, at the price of names such as
   `outcome-step-outcome-step-kind-binary-report-inspection-failure`. Rejected:
   an instantiation is named by a marked alias.
+
+### Phase 8 — Declarations grouped above the item (done)
+
+A type gated behind a feature carried one wrapped attribute per rule, some of
+them on its fields, and a block one wrapped mark per exported function. The
+rules and the exported names can now be stated once, above the item.
+
+- `#[exports(a, b)]` on an `impl` block names its exported functions. The
+  functions need no mark of their own. A listed function is given the
+  `#[export]` mark by the block attribute, so both forms share the reflection
+  and its checks.
+- `#[wit(skip(a, b))]` on a struct names the fields that are not exported.
+- `#[wit(display = "name")]` on an item is the short form of
+  `field(name = "name", into = String, with = ToString::to_string)`.
+
+The per-function `#[export]`, the per-field `#[wit(skip)]` and the long
+`field(…)` form remain.
+
+Evidence:
+
+| Test or check | What it establishes |
+| --- | --- |
+| `committed_artifacts_are_what_the_declarations_generate` (`fixtures/session/owner`) | The fixture uses the list, `skip(…)` and `display = "…"`. Its three committed files did not change by one byte. |
+| `marked_items_declare_the_package_a_schema_program_would` (`crates/wit-reflect/tests/registry.rs`) | The per-function marks still register, also through `cfg_attr`. |
+
+Verified by hand, not by a retained test. Each of these is a compile error at
+the place named:
+
+| Misuse | Reported at |
+| --- | --- |
+| A listed name that is no function of the block | the name |
+| A function both listed and marked | the name |
+| A listed function without `self` | the function |
+| A block that lists and marks nothing | the block's type |
+| `skip(…)` naming a field that does not exist | the name |
+| `skip(…)` naming a field with a rule of its own | the name |
+| `skip(…)` on an enum | the first name |
+| `display = "…"` on a type that is not `Display` | the derive |
+
+Examined and not adopted, 2026-11-23:
+
+- **A marked block exports its public functions.** No name would be written
+  twice. But `pub` would then mean "in the contract" instead of "callable from
+  Rust", and functions would have to be moved between blocks to suit the
+  generator. A generator describes the code as written; it does not prescribe
+  how to write it.
+- **Private fields are not exported.** The same objection, and it would not
+  reduce the declarations: a type that keeps its fields private to protect an
+  invariant would need a mark to export them.
+- **Skipping every field without a WIT form.** A field whose type lost its
+  derive would leave the contract silently instead of failing to compile.
+
+Limits:
+
+- A listed function takes no options. One that needs `static`, `constructor`
+  or another name is marked with `#[export(…)]` instead.
+- Exported functions are registered in the order they are written in the
+  block, not in the order of the list.
+- `display = "…"` reports a type that is not `Display` at the derive, not at
+  the attribute.
 
 ## Alternatives to the derive, examined and not adopted
 
