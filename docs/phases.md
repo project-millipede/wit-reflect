@@ -695,6 +695,58 @@ Limits:
 - With the `representations` feature every derive reads the manifest once per
   crate and includes it as a tracked input.
 
+### Phase 10 — Conversions stated in the map (done)
+
+A map entry needed `impl From<Foreign> for Shown`. Where several foreign types
+are shown as one type in the same way, that implementation was repeated for
+each of them. It cannot be written once: the types of a dependency often have
+functions of the same name without sharing a trait. An entry now states its
+conversion, and several types share the entry.
+
+- `Foreign => Shown with conversion` states the conversion in the map. No
+  `From` implementation is written.
+- `A | B => Shown` lists several foreign types in one entry. A stated
+  conversion is then written once for all of them.
+- The conversion is `|value| expression`, with one untyped name, or the path
+  of a function that takes the value. The macro makes the expression the body
+  of one function per foreign type, with the value typed as that type. A real
+  closure would have to infer the type, which fails for a method call.
+- The expression is checked once per foreign type. The types need only the
+  functions it calls.
+- An entry without `with` converts through `From`, as before.
+- A stated conversion also connects two types of other crates, such as
+  `std::time::Duration => u64`. The orphan rule forbids that `From`
+  implementation, so the map could not express it before.
+
+Evidence:
+
+| Test or check | What it establishes |
+| --- | --- |
+| `committed_artifacts_are_what_the_declarations_generate` (`fixtures/session/owner`) | The fixture states its one conversion in the map and lost its `From` implementation. Its three committed files did not change by one byte. |
+| `operations_return_lowered_values_through_generated_forwarding` (`fixtures/session/component`) | A value converted by a stated conversion arrives through generated forwarding as before. |
+| `a_declared_map_represents_foreign_types_wherever_they_appear` (`crates/wit-reflect/tests/representation_rules.rs`) | One conversion serves two types that share no trait, and another connects two types of other crates. |
+
+Verified by hand, not by a retained test:
+
+| Case | Result |
+| --- | --- |
+| A conversion named by a function's path | compiles |
+| A typed parameter, or two parameters | compile error at the parameters |
+| A type of another group in a shared entry | compile error at that type |
+| A conversion of the wrong type | compile error at the expression, naming the shown type |
+| A function that one of the shared types lacks | compile error at the call, naming that type |
+
+An uncommitted spike on a copy of the repository preceded the implementation
+and showed the same results.
+
+Limits:
+
+- The conversion sees one value. A value that depends on a sibling field
+  still takes a rule on that field.
+- The types of one entry stand in one group, so they come from one crate.
+- A stated conversion is not a `From` implementation. A field rule
+  `into = Shown` on such a type still needs one.
+
 ## Alternatives to the derive, examined and not adopted
 
 The derive exists because a macro sees only the item it is attached to. Three

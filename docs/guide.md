@@ -44,7 +44,10 @@ representations! {
     pub Representations {
         foreign {
             foreign::Endianness => Endianness,     // a dependency's enum
-            foreign::FileType => MachoValue,       // wrapped number as { value, name }
+            foreign::FileType => MachoValue with |file_type| MachoValue {
+                value: file_type.into_inner(),     // wrapped number as { value, name }
+                name: file_type.name().map(str::to_owned),
+            },
             foreign::Version => DisplayText,       // its formatted text
             foreign::DecodeError => DisplayText,
         }
@@ -78,6 +81,11 @@ pub struct Image {
 - **An entry is `Foreign => Shown`:** the contract shows `Foreign` as the type
   `Shown`, converted with `From`. `DisplayText` is the library's type for a
   value's `Display` text; it appears as `string`.
+- **An entry can state its conversion** after `with`, as `|value| expression`
+  or as a function's path. No `From` is written then. Several foreign types
+  separated by `|` share one entry and its conversion:
+  `A | B => Shown with |value| …`. The conversion is expanded and checked for
+  each type, so the types need no trait in common.
 - **Entries stand in groups** named after where their types come from. An
   entry whose path does not begin with its group's name is a compile error.
 - **A rule on a field still works** and wins over the map. `cpu_subtype` keeps
@@ -440,11 +448,10 @@ as a type of your own. The map then names that type for the foreign one.
 #[wit(remote = foreign::Endianness)]
 pub enum Endianness { Little, Big }
 
-// A wrapped number: one wire record and a conversion per foreign type.
+// A wrapped number: one wire record. The map entry states the conversion,
+// once for every foreign type that is shown this way.
 #[derive(WitType)]
 pub struct MachoValue { pub value: u32, pub name: Option<String> }
-
-impl From<foreign::FileType> for MachoValue { /* into_inner(), name() */ }
 ```
 
 These are the only wire-shaped types a person writes. If the foreign enum gains

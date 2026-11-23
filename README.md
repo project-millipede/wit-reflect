@@ -3,7 +3,7 @@
 Generate a WIT contract, and the code behind it, from the Rust types and
 functions an implementation already has.
 
-**Status: Phases 1 to 9 are implemented.** From ordinary Rust the library
+**Status: Phases 1 to 10 are implemented.** From ordinary Rust the library
 generates the WIT contract, the bindings setup, the conversion of results and
 the code that forwards each exported function to its Rust operation. The
 contract is declared on the items themselves; no schema program is needed. A
@@ -83,7 +83,8 @@ wit_reflect::representations! {
     pub Representations {
         object {
             object::Endianness => Endianness,          // a local enum
-            object::macho::FileType => MachoValue,     // a local record { value, name }
+            object::macho::CpuType | object::macho::FileType => MachoValue
+                with |value| MachoValue::new(value.into_inner(), value.name()),
             object::macho::Version => DisplayText,     // its `Display` text
         }
         std {
@@ -99,7 +100,10 @@ wit_reflect::representations! {
 representations = "crate::Representations"
 ```
 
-An entry is `Foreign => Shown` and needs `impl From<Foreign> for Shown`.
+An entry is `Foreign => Shown`. It converts through `impl From<Foreign> for
+Shown`, or through the conversion it states after `with`. Several foreign types
+separated by `|` share an entry, so one conversion is written once; the types
+need no trait in common. `MachoValue` is a local record `{ value, name }`, and
 `DisplayText` is the library's type for a value's `Display` text. Entries stand
 in groups named after where their types come from.
 
