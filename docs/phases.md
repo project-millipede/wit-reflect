@@ -1,6 +1,6 @@
 # Definitions and phases
 
-**Status: Phases 1 to 8 implemented, 2026-11-23.**
+**Status: Phases 1 to 9 implemented, 2026-11-23.**
 
 The goal is the generation model required by the generator comparison:
 
@@ -586,6 +586,108 @@ Limits:
   block, not in the order of the list.
 - `display = "…"` reports a type that is not `Display` at the derive, not at
   the attribute.
+
+### Phase 9 — Foreign representations declared once per crate (done)
+
+A field whose type belongs to another crate needed a rule on every field that
+holds it. That rule repeats a fact about the type. A crate now states the fact
+once, in a map, and its fields carry no rule.
+
+- `representations!` declares the map: a unit struct of the declaring crate
+  and one `Represents<Foreign>` implementation per entry `Foreign => Shown`.
+  The orphan rule allows it because the struct is local.
+- Entries stand in groups named after where their types come from. An entry
+  whose path does not begin with its group's name is an error.
+- `rule::DisplayText` is the shown type for a value's `Display` text. With it
+  every entry has one form, a type on each side, and one mechanism, `From`.
+- The derive asks the map for every field without a rule. The generated code
+  holds a constant, "does the map have an entry for this field's type?", and
+  the compiler selects the entry or the type itself. Nothing is looked up when
+  a value crosses.
+- `[package.metadata.wit-reflect] representations = "crate::…"` names the map
+  for every derive of the package's library. It is read by the derive, behind
+  the `representations` feature. `#[wit(map = path)]` names a map on one item.
+- `usize` and `isize` are shown as `u64` and `s64` without a rule. There is
+  one lossless answer, so nothing is left to declare.
+
+| Rule | |
+| --- | --- |
+| A rule on a field | wins over the map |
+| A type the map does not name | is not covered; without a derive it is a compile error, as before |
+| `Option<T>`, `Vec<T>` | covered by the entry for `T` |
+| Case payloads and fields of struct-like cases | covered like struct fields |
+| A type with an entry and a derive | the entry wins |
+| A type whose fields have no entry | crosses as it would without a map, unchanged if it qualifies |
+
+Evidence:
+
+| Test or check | What it establishes |
+| --- | --- |
+| `committed_artifacts_are_what_the_declarations_generate` (`fixtures/session/owner`) | The fixture names its map in its manifest and lost four field rules and one payload rule. Its three committed files did not change by one byte. |
+| `a_declared_map_represents_foreign_types_wherever_they_appear` (`crates/wit-reflect/tests/representation_rules.rs`) | A map covers a foreign type as a field, in `Option` and `Vec`, as a case payload and in a struct-like case. A rule on a field wins, and a type the map does not name is left alone. |
+| `a_type_crosses_unchanged_only_if_the_bindings_can_use_it_as_it_is` (`crates/wit-reflect/tests/unchanged_types.rs`) | A type with a covered field or a `usize` field is converted. A type whose fields have no entry still crosses unchanged. |
+| `ruled_owner_types_render_their_declared_wire_shapes` (`crates/wit-reflect/tests/representation_rules.rs`) | A bare `usize` field is shown as `u64`, like one with `widen`. |
+| `operations_return_lowered_values_through_generated_forwarding` (`fixtures/session/component`) | Values of covered fields arrive converted through generated forwarding. |
+
+Verified by hand, not by a retained test:
+
+| Case | Result |
+| --- | --- |
+| A foreign field without an entry | compile error at the field, with a note naming the map; a second report at the derive |
+| An entry whose conversion does not exist | compile error at the entry's shown type |
+| Two entries for one type | compile error at the second entry |
+| An entry in the wrong group | compile error at the entry |
+| `map` on a generic item | compile error at the attribute |
+| A `usize` parameter of an exported function | compile error at the parameter |
+| The setting changed to a path that does not exist | the crate is rebuilt and every derive reports the missing type |
+| A crate without the `representations` feature | its dependency tree has no TOML parser |
+| The fixture for `wasm32-unknown-unknown` | builds |
+
+Build time of the fixture's owner library, debug, three runs each: 0.22 s
+with field rules, 0.23 to 0.27 s with the map. The crate has 14 derived
+types; a large crate was not measured.
+
+#### Spike
+
+An uncommitted spike on a copy of the repository preceded the implementation.
+
+| Check | Result |
+| --- | --- |
+| Generated code selects the entry or the type itself per field, across crates | works |
+| The fixture with field rules replaced by a map | generated files unchanged |
+| Containers, case payloads, struct-like cases, `usize` | covered |
+| A type whose fields have no entry | still crosses unchanged |
+| A macro reads a setting from the owner crate's manifest | works |
+| Cargo rebuilds when only that setting changes | no; it does once the expansion includes the manifest as a tracked input |
+
+Departures from the plan:
+
+- The setting is applied only where `CARGO_BIN_NAME` is unset and the crate
+  name is the library's. A binary can share the library's name.
+- The tasks accept `representations` in the same manifest table, so that a
+  component crate may hold contract settings and a map setting together.
+
+Limits:
+
+- A generic item uses no map: a constant expression cannot mention a type
+  parameter. A foreign field there takes a rule. Naming a map on a generic
+  item is an error; the crate's setting just does not reach it.
+- An entry for `T` covers `Option<T>` and `Vec<T>`, not `Result`, tuples or
+  `Box`.
+- A field no longer shows how it is represented; the map does. The generated
+  WIT shows the result.
+- One setting per package, for its library target. Other targets of the
+  package, and another map, use `#[wit(map = …)]`.
+- A path in the setting that does not resolve is reported at every derive of
+  the crate, not at the manifest.
+- An uncovered field is reported at the field and a second time at the
+  derive.
+- `usize` is no longer flagged. A platform-sized number crosses without
+  anyone writing a rule; the value is exact. An exported function cannot
+  take one as a parameter, and an alias of `usize` in a parameter fails only
+  when the component crate compiles.
+- With the `representations` feature every derive reads the manifest once per
+  crate and includes it as a tracked input.
 
 ## Alternatives to the derive, examined and not adopted
 

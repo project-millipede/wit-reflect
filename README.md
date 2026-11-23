@@ -2,7 +2,7 @@
 
 Generate WIT directly from the Rust types an implementation already uses.
 
-**Status: Phases 1 to 7 are implemented.** From ordinary Rust types and
+**Status: Phases 1 to 9 are implemented.** From ordinary Rust types and
 operations the library generates the WIT contract, the bindings setup, the
 conversion of results and the code that forwards each exported function to
 its Rust operation. The contract is declared on the items themselves; no
