@@ -370,7 +370,7 @@ function replace the default.
 | Rule | The field becomes | Checked by the compiler |
 | --- | --- | --- |
 | `#[wit(display)]` | `string`, from `to_string()` | the type is `Display` |
-| `#[wit(widen)]` | `u64` for `usize`, `s64` for `isize` | only those two types |
+| `#[wit(widen)]` | `u64` for `usize`, `s64` for `isize` | only those two types; optional, they are widened without it |
 | `#[wit(into = W)]` | `W`, from `W::from(field)` | `W: From<FieldType>` |
 | `#[wit(into = W, with = f)]` | `W`, from `f(&self)` | `f: fn(&Self) -> W` |
 | `#[wit(skip)]` | absent | — |
@@ -575,8 +575,8 @@ limited to types of other crates.
 At compile time, at the declaration:
 
 ```text
-error[E0277]: `usize` has no WIT representation
-   = note: `usize` and `isize` depend on the target; use a fixed-width integer for wire data
+error[E0277]: `std::time::Duration` has no WIT representation
+   = note: derive `wit_reflect::WitType` on the struct or enum that owns this data
 
 error: this field contains the type it belongs to; a WIT type cannot be recursive
 

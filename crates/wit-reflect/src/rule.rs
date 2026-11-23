@@ -13,9 +13,10 @@ use crate::types::Type;
 
 /// An integer whose width depends on the target, with its lossless wire type.
 ///
-/// `usize` and `isize` are memory quantities, not wire types. `#[wit(widen)]`
-/// exports them as `u64` and `s64`. The implementations exist only for targets
-/// whose pointers are at most 64 bits wide, so the conversion never loses bits.
+/// `usize` and `isize` are memory quantities, not wire types. They are
+/// exported as `u64` and `s64`, with or without `#[wit(widen)]`. The
+/// implementations exist only for targets whose pointers are at most 64 bits
+/// wide, so the conversion never loses bits.
 pub trait Widen {
     /// The fixed-width type that holds every value of `Self`.
     type Wire: WitType;

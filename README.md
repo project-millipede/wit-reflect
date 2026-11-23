@@ -286,10 +286,13 @@ Rules worth knowing:
   lower an enum by its discriminant.
 - **A stale contract does not compile.** If the bindings and an owner type
   disagree, the compiler names the binding type and the parts it was given.
-- **Unsupported shapes fail early.** `usize` without a rule, borrowed data,
-  unions, field-less records, `async fn`, generic functions and `&mut`
-  parameters are compile errors at the declaration. Nothing is downgraded to a
-  string or skipped with a warning.
+- **Unsupported shapes fail early.** Borrowed data, unions, field-less
+  records, `async fn`, generic functions and `&mut` parameters are compile
+  errors at the declaration. Nothing is downgraded to a string or skipped with
+  a warning.
+- **Platform-sized integers are widened.** WIT has no `usize`: it is 64 bits
+  natively and 32 bits in a component. `usize` and `isize` are exported as
+  `u64` and `s64`, which hold every value. No rule is needed.
 
 To keep an owner crate's ordinary build free of this library, gate the macros:
 

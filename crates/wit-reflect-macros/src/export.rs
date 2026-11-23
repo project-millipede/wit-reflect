@@ -245,6 +245,14 @@ fn reflect_params(signature: &Signature, runtime: &Path, errors: &mut Errors) ->
         let Some(name) = parameter_name(parameter, errors) else {
             continue;
         };
+        if let Some(platform_sized) = platform_sized_integer(&parameter.ty) {
+            errors.report(
+                platform_sized,
+                "a `usize` or `isize` parameter cannot be exported: the contract carries \
+                 64 bits, which may not fit; take a fixed-width integer",
+            );
+            continue;
+        }
         let param = match &*parameter.ty {
             Type::Reference(reference) => {
                 if let Some(mutability) = &reference.mutability {
@@ -275,6 +283,23 @@ fn reflect_params(signature: &Signature, runtime: &Path, errors: &mut Errors) ->
         params.push(param);
     }
     params
+}
+
+/// `usize` or `isize` as written, by value or behind a reference.
+///
+/// A result of that type is widened without loss. An argument would have to be
+/// narrowed, which can fail, so it is rejected where it is declared. An alias
+/// is not visible here and fails later, when the component crate compiles.
+fn platform_sized_integer(parameter_type: &Type) -> Option<&Type> {
+    let written = match parameter_type {
+        Type::Reference(reference) => &*reference.elem,
+        owned_type => owned_type,
+    };
+    let Type::Path(type_path) = written else {
+        return None;
+    };
+    let is_platform_sized = type_path.path.is_ident("usize") || type_path.path.is_ident("isize");
+    is_platform_sized.then_some(written)
 }
 
 /// The WIT name of a parameter bound to a plain identifier.

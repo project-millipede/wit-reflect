@@ -54,6 +54,12 @@ pub struct Ruled {
     pub count: usize,
 }
 
+// The binding holds a 64-bit integer where this type holds a `usize`.
+#[derive(Clone, Debug, WitType)]
+pub struct Counted {
+    pub count: usize,
+}
+
 #[derive(Clone, Debug, WitType)]
 pub struct Renamed {
     #[wit(name = "identifier")]
@@ -103,6 +109,7 @@ fn a_type_crosses_unchanged_only_if_the_bindings_can_use_it_as_it_is() {
     assert!(!crosses_unchanged::<Vec<HoldsHidden>>());
     // A value or a name that differs from what is stored.
     assert!(!crosses_unchanged::<Ruled>());
+    assert!(!crosses_unchanged::<Counted>());
     assert!(!crosses_unchanged::<Renamed>());
     // wit-bindgen cannot map a generic type, even one holding unchanged values.
     assert!(!crosses_unchanged::<Carrier<Entry>>());

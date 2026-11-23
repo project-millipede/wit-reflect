@@ -1,6 +1,7 @@
 //! The reflection trait and its implementations for standard types.
 
 use crate::graph::TypeGraph;
+use crate::rule::Widen;
 use crate::types::Type;
 
 /// A Rust type with a WIT representation.
@@ -36,8 +37,7 @@ use crate::types::Type;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no WIT representation",
     label = "cannot cross a WIT boundary as written",
-    note = "derive `wit_reflect::WitType` on the struct or enum that owns this data",
-    note = "`usize` and `isize` depend on the target; use a fixed-width integer for wire data"
+    note = "derive `wit_reflect::WitType` on the struct or enum that owns this data"
 )]
 pub trait WitType: 'static {
     /// Describe this type as a WIT type expression.
@@ -80,6 +80,29 @@ primitive! {
     char => Char,
     String => String,
 }
+
+/// A platform-sized integer has no width of its own on the wire: `usize` is 64
+/// bits natively and 32 bits in a Wasm component, while a contract is one text
+/// for both. It is shown at the 64-bit width, which holds every value on any
+/// target [`Widen`] is implemented for.
+macro_rules! platform_sized {
+    ($($rust:ty),* $(,)?) => {
+        $(
+            #[cfg(any(
+                target_pointer_width = "16",
+                target_pointer_width = "32",
+                target_pointer_width = "64"
+            ))]
+            impl WitType for $rust {
+                fn wit_type(graph: &mut TypeGraph) -> Type {
+                    <$rust as Widen>::Wire::wit_type(graph)
+                }
+            }
+        )*
+    };
+}
+
+platform_sized!(usize, isize);
 
 /// The referent of a `&str` parameter.
 impl WitType for str {

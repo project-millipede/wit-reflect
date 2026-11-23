@@ -336,7 +336,7 @@ pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 /// | Rule | Wire type | Requirement |
 /// | --- | --- | --- |
 /// | `#[wit(display)]` | `string` | the field is `Display` |
-/// | `#[wit(widen)]` | `u64` for `usize`, `s64` for `isize` | see [`rule::Widen`] |
+/// | `#[wit(widen)]` | `u64` for `usize`, `s64` for `isize` | see [`rule::Widen`]; optional, as these two types are widened without it |
 /// | `#[wit(into = W)]` | `W`'s representation | `W: From<FieldType>` |
 /// | `#[wit(into = W, with = function)]` | `W`'s representation | `function: fn(&Self) -> W` |
 /// | `#[wit(skip)]` | none; the field is not exported | a named field |
@@ -443,8 +443,9 @@ pub use wit_reflect_macros::WitResource;
 /// resource is registered by [`macro@exports`] on its `impl` block.
 ///
 /// Not exported: `async fn`, `unsafe fn`, generic functions, `impl Trait`,
-/// methods that consume `self`, `&mut` parameters, pattern parameters and
-/// reference results. Each is a compile error at the function.
+/// methods that consume `self`, `&mut` parameters, `usize` and `isize`
+/// parameters, pattern parameters and reference results. Each is a compile
+/// error at the function. A `usize` result is exported as `u64`.
 ///
 /// To keep the owning crate's ordinary build independent of this crate, apply
 /// it as `#[cfg_attr(feature = "wit", wit_reflect::export)]`.

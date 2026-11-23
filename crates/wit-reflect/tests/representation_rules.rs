@@ -119,7 +119,7 @@ enum InputError {
     InvalidReadCount {
         #[wit(widen)]
         reported: usize,
-        #[wit(widen)]
+        // Without the rule a platform-sized integer is widened all the same.
         capacity: usize,
     },
     Source(#[wit(display)] std::io::Error),
@@ -263,7 +263,7 @@ interface inspection {
 
 /// Each rule replaces the stored type with its declared wire type: foreign
 /// types through `remote`, `into` and a sibling-dependent `with`, formatted
-/// values through `display`, `usize` through `widen`. Skipped fields are
+/// values through `display`, `usize` with or without `widen`. Skipped fields are
 /// absent, and a computed message leads a struct's record and turns an enum
 /// into a record of its cases.
 #[test]

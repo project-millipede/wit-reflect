@@ -23,6 +23,8 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
+use crate::rule::Widen;
+
 /// An owner value that can be handed to generated bindings.
 ///
 /// Derived together with [`WitType`](crate::WitType), from the same fields and
@@ -235,6 +237,31 @@ leaf!(
     String,
     ()
 );
+
+/// A platform-sized integer crosses at the 64-bit width its WIT type has. The
+/// binding holds that fixed-width integer, so the value is always converted
+/// and a type holding one never crosses unchanged.
+macro_rules! platform_sized {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            #[cfg(any(
+                target_pointer_width = "16",
+                target_pointer_width = "32",
+                target_pointer_width = "64"
+            ))]
+            impl Lower for $ty {
+                type Passage = Converted;
+                type Parts = <$ty as Widen>::Wire;
+
+                fn lower(self) -> Self::Parts {
+                    Widen::widen(self)
+                }
+            }
+        )*
+    };
+}
+
+platform_sized!(usize, isize);
 
 // A container crosses as its content does. Unchanged content is returned as it
 // is, without visiting the elements.
