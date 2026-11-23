@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="490" viewBox="0 0 680 490" role="img" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>The amount needs the currency beside it</title>
+  <desc>The record Price has two fields. The contract field for the currency is made from the currency alone. The contract field for the amount needs both the amount and the currency, because the same number is shown differently under each currency.</desc>
+  <style>
+    .surface { fill: #ffffff; }
+    .frame { fill: none; stroke: #888780; stroke-width: 1; stroke-dasharray: 4 4; }
+    .line { stroke: #888780; stroke-width: 1.5; fill: none; }
+    .needs { stroke: #D85A30; stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+    .text { fill: #2C2C2A; font-size: 14px; }
+    .note { fill: #5F5E5A; font-size: 12px; }
+    .rust { fill: #EEEDFE; stroke: #534AB7; stroke-width: 1; }
+    .rust-title { fill: #3C3489; font-size: 14px; font-weight: 500; }
+    .rust-note { fill: #534AB7; font-size: 12px; }
+    .contract { fill: #E1F5EE; stroke: #0F6E56; stroke-width: 1; }
+    .contract-title { fill: #085041; font-size: 14px; font-weight: 500; }
+    .contract-note { fill: #0F6E56; font-size: 12px; }
+    .plain { fill: #F1EFE8; stroke: #888780; stroke-width: 1; }
+    @media (prefers-color-scheme: dark) {
+      .surface { fill: #1f1f1e; }
+      .text { fill: #F1EFE8; }
+      .note { fill: #B4B2A9; }
+      .rust { fill: #3C3489; stroke: #AFA9EC; }
+      .rust-title { fill: #EEEDFE; }
+      .rust-note { fill: #CECBF6; }
+      .contract { fill: #085041; stroke: #5DCAA5; }
+      .contract-title { fill: #E1F5EE; }
+      .contract-note { fill: #9FE1CB; }
+      .plain { fill: #444441; stroke: #B4B2A9; }
+    }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect class="surface" x="0" y="0" width="680" height="490" rx="8"/>
+
+  <rect class="frame" x="40" y="40" width="250" height="216" rx="8"/>
+  <text class="note" x="56" y="62" dominant-baseline="central">struct Price</text>
+
+  <rect class="rust" x="60" y="80" width="210" height="56" rx="6"/>
+  <text class="rust-title" x="165" y="98" text-anchor="middle" dominant-baseline="central">currency</text>
+  <text class="rust-note" x="165" y="118" text-anchor="middle" dominant-baseline="central">for example USD</text>
+
+  <rect class="rust" x="60" y="180" width="210" height="56" rx="6"/>
+  <text class="rust-title" x="165" y="198" text-anchor="middle" dominant-baseline="central">amount</text>
+  <text class="rust-note" x="165" y="218" text-anchor="middle" dominant-baseline="central">a number, for example 1050</text>
+
+  <rect class="contract" x="430" y="80" width="210" height="56" rx="6"/>
+  <text class="contract-title" x="535" y="98" text-anchor="middle" dominant-baseline="central">currency</text>
+  <text class="contract-note" x="535" y="118" text-anchor="middle" dominant-baseline="central">its code as text</text>
+
+  <rect class="contract" x="430" y="180" width="210" height="56" rx="6"/>
+  <text class="contract-title" x="535" y="198" text-anchor="middle" dominant-baseline="central">amount</text>
+  <text class="contract-note" x="535" y="218" text-anchor="middle" dominant-baseline="central">the amount as people read it</text>
+
+  <line class="line" x1="270" y1="108" x2="420" y2="108" marker-end="url(#head)"/>
+  <line class="line" x1="270" y1="212" x2="420" y2="212" marker-end="url(#head)"/>
+  <line class="needs" x1="270" y1="128" x2="421" y2="194" marker-end="url(#head)"/>
+
+  <rect class="plain" x="40" y="296" width="230" height="44" rx="6"/>
+  <text class="text" x="155" y="318" text-anchor="middle" dominant-baseline="central">1050 under USD</text>
+  <line class="line" x1="270" y1="318" x2="350" y2="318" marker-end="url(#head)"/>
+  <rect class="plain" x="360" y="296" width="280" height="44" rx="6"/>
+  <text class="text" x="500" y="318" text-anchor="middle" dominant-baseline="central">10.50</text>
+
+  <rect class="plain" x="40" y="356" width="230" height="44" rx="6"/>
+  <text class="text" x="155" y="378" text-anchor="middle" dominant-baseline="central">1050 under JPY</text>
+  <line class="line" x1="270" y1="378" x2="350" y2="378" marker-end="url(#head)"/>
+  <rect class="plain" x="360" y="356" width="280" height="44" rx="6"/>
+  <text class="text" x="500" y="378" text-anchor="middle" dominant-baseline="central">1050</text>
+
+  <rect class="rust" x="40" y="434" width="12" height="12" rx="2"/>
+  <text class="note" x="60" y="440" dominant-baseline="central">Rust field</text>
+  <rect class="contract" x="150" y="434" width="12" height="12" rx="2"/>
+  <text class="note" x="170" y="440" dominant-baseline="central">Contract field</text>
+  <line class="needs" x1="290" y1="440" x2="326" y2="440"/>
+  <text class="note" x="336" y="440" dominant-baseline="central">Needs the neighbouring field</text>
+</svg>

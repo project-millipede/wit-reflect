@@ -90,7 +90,8 @@ pub struct Image {
   entry whose path does not begin with its group's name is a compile error.
 - **A rule on a field still works** and wins over the map. `cpu_subtype` keeps
   one because its value depends on the field next to it, which is a fact about
-  this field and not about its type.
+  this field and not about its type. Other ways to state that are weighed in
+  [A value whose meaning depends on its neighbour](issues/neighbour-dependent-value.md).
 - **`usize` needs nothing.** WIT has no platform-sized integer, so it is shown
   as `u64`, which holds every value.
 - **A type the map does not name is not covered.** A foreign field without an

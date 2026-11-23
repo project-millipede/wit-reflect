@@ -383,6 +383,7 @@ crates/wit-reflect-macros/   the derives, #[export], #[exports], #[named], repre
 fixtures/session/owner/      example library with its marks and its map, and the generate binary
 fixtures/session/component/  example component: contract settings and generated artifacts
 docs/guide.md                the developer guide with the worked example
+docs/issues/                 one document per open design question
 docs/phases.md               definitions, phases and their acceptance evidence
 docs/rust-practices.md       Rust practices applied in this workspace
 ```

@@ -927,3 +927,6 @@ built on it would have to redo that work of the compiler.
 - Asynchronous exports under JSPI, which the workbench's bindings enable.
 - A representation map for generic items, and for containers other than
   `Option` and `Vec`.
+- A map entry for a type inside its owner, for a value whose meaning depends
+  on its neighbour. It was tried and not added; see
+  [the issue](issues/neighbour-dependent-value.md).
