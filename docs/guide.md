@@ -361,6 +361,7 @@ function replace the default.
 | `#[wit(into = W)]` | `W`, from `W::from(field)` | `W: From<FieldType>` |
 | `#[wit(into = W, with = f)]` | `W`, from `f(&self)` | `f: fn(&Self) -> W` |
 | `#[wit(skip)]` | absent | — |
+| `#[wit(skip(a, b))]` on the type | the named fields are absent | each name is a field without a rule of its own |
 | `#[wit(field(name = "…", into = W, with = f))]` on the type | an extra leading field | as above |
 | `#[wit(cases = "…")]` on an enum with such a field | a record holding the cases | — |
 | `#[wit(transparent)]` on a single-field struct | the field's own representation | — |

@@ -2,7 +2,7 @@
 
 use quote::ToTokens;
 use syn::meta::ParseNestedMeta;
-use syn::{Attribute, Expr, ExprLit, ExprPath, Lit, LitStr, Meta, Path, Type};
+use syn::{Attribute, Expr, ExprLit, ExprPath, Ident, Lit, LitStr, Meta, Path, Type};
 
 /// Collects every problem in an item so one compilation reports them all.
 #[derive(Default)]
@@ -50,6 +50,8 @@ pub(crate) struct ContainerAttributes {
     pub(crate) convert: Option<Path>,
     /// `path = …`: where the component crate can name the type.
     pub(crate) public_path: Option<Path>,
+    /// `skip(a, b)`: fields that are not exported, named on the item.
+    pub(crate) skipped_fields: Vec<Ident>,
 }
 
 /// A field of the wire record computed from the whole value.
@@ -111,6 +113,12 @@ impl ContainerAttributes {
                 let computed_field = ComputedField::parse(&meta)?;
                 parsed.computed_fields.push(computed_field);
                 Ok(())
+            } else if meta.path.is_ident("skip") {
+                meta.parse_nested_meta(|entry| {
+                    let field = entry.path.require_ident()?.clone();
+                    parsed.skipped_fields.push(field);
+                    Ok(())
+                })
             } else if meta.path.is_ident("cases") {
                 set_string(&mut parsed.cases, &meta)
             } else if meta.path.is_ident("remote") {
@@ -132,8 +140,8 @@ impl ContainerAttributes {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "expected `name`, `interface`, `transparent`, `field`, `cases`, `remote`, \
-                     `convert`, `path` or `crate`",
+                    "expected `name`, `interface`, `transparent`, `field`, `skip`, `cases`, \
+                     `remote`, `convert`, `path` or `crate`",
                 ))
             }
         });

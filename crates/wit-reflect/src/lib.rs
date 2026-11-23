@@ -351,6 +351,14 @@ pub use types::{Case, EnumCase, Field, Payload, Type, TypeDef, TypeKey};
 /// implement both `WitType` and `Lower`. A type that contains itself is
 /// rejected: WIT types cannot be recursive.
 ///
+/// # Rules stated on the item
+///
+/// `#[wit(skip(a, b))]` on a struct keeps the named fields out of the
+/// contract, like `#[wit(skip)]` on each of them. Stating rules on the item
+/// leaves the fields free of attributes, which matters where every attribute
+/// is wrapped in `cfg_attr`. A name that is not a field, or a field with a
+/// rule of its own, is a compile error.
+///
 /// # Computed fields
 ///
 /// `#[wit(field(name = "…", into = W, with = function))]` on the item adds a

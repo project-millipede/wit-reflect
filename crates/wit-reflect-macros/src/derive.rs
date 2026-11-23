@@ -412,6 +412,13 @@ impl<'input> Shape<'input> {
         container: &ContainerAttributes,
         errors: &mut Errors,
     ) -> Option<Self> {
+        let is_record = matches!(
+            &input.data,
+            Data::Struct(data) if matches!(data.fields, Fields::Named(_))
+        );
+        if !is_record || container.transparent.is_some() {
+            reject_skip_list(container, errors);
+        }
         match &input.data {
             Data::Struct(data) => Self::plan_struct(input, data, container, errors),
             Data::Enum(data) => Self::plan_enum(input, data, container, errors),
@@ -437,7 +444,8 @@ impl<'input> Shape<'input> {
 
         match &data.fields {
             Fields::Named(fields) => {
-                let field_plans = plan_named_fields(fields, FieldSite::StructField, errors);
+                let mut field_plans = plan_named_fields(fields, FieldSite::StructField, errors);
+                skip_listed_fields(&mut field_plans, &container.skipped_fields, errors);
                 let has_exported_field = field_plans.iter().any(|field| !field.is_skipped());
                 if !has_exported_field && container.computed_fields.is_empty() {
                     errors.report(&input.ident, "a WIT record needs at least one field");
@@ -737,6 +745,33 @@ fn nested_list(items: &[TokenStream]) -> TokenStream {
         .iter()
         .rev()
         .fold(quote! { () }, |rest, item| quote! { (#item, #rest) })
+}
+
+/// Apply the item's `skip(…)` list: each field it names is not exported.
+fn skip_listed_fields(fields: &mut [FieldPlan<'_>], listed: &[Ident], errors: &mut Errors) {
+    for name in listed {
+        let field = fields
+            .iter_mut()
+            .find(|field| field.field.ident.as_ref() == Some(name));
+        match field {
+            None => errors.report(name, "this struct has no field of that name"),
+            Some(field) if field.rule.is_some() => errors.report(
+                name,
+                "this field already has a representation rule; a field takes one",
+            ),
+            Some(field) => field.rule = Some(FieldRule::Skip),
+        }
+    }
+}
+
+/// `skip(…)` names fields of a record, so it applies to nothing else.
+fn reject_skip_list(container: &ContainerAttributes, errors: &mut Errors) {
+    if let Some(first_field) = container.skipped_fields.first() {
+        errors.report(
+            first_field,
+            "`skip(…)` on the item applies to a struct with named fields",
+        );
+    }
 }
 
 fn plan_named_fields<'input>(

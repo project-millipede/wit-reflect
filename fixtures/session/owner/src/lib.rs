@@ -204,10 +204,12 @@ pub enum FailureKind {
 }
 
 #[derive(Debug, WitType)]
-#[wit(field(name = "message", into = String, with = ToString::to_string))]
+#[wit(
+    field(name = "message", into = String, with = ToString::to_string),
+    skip(cause)
+)]
 pub struct Failure {
     pub kind: FailureKind,
-    #[wit(skip)]
     pub cause: Option<Box<dyn Error + Send + Sync>>,
 }
 
