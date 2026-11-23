@@ -34,6 +34,19 @@ mod foreign {
     }
 
     #[derive(Clone, Copy)]
+    pub struct Platform(u32);
+
+    impl Platform {
+        pub fn into_inner(self) -> u32 {
+            self.0
+        }
+
+        pub fn name(self) -> Option<&'static str> {
+            (self.0 == 1).then_some("PLATFORM_MACOS")
+        }
+    }
+
+    #[derive(Clone, Copy)]
     pub struct CpuSubtype(u32);
 
     impl CpuSubtype {
@@ -289,11 +302,18 @@ wit_reflect::representations! {
     Representations {
         foreign {
             foreign::Endianness => Endianness,
-            foreign::FileType => MachoValue,
+            // One conversion for two types that share no trait. It is
+            // expanded for each of them.
+            foreign::FileType | foreign::Platform => MachoValue with |value| MachoValue {
+                value: value.into_inner(),
+                name: value.name().map(str::to_owned),
+            },
             foreign::Version => DisplayText,
         }
         std {
             std::io::Error => DisplayText,
+            // Both types belong to other crates: no `From` could be written.
+            std::time::Duration => u64 with |duration| duration.as_secs(),
         }
     }
 }
@@ -320,6 +340,8 @@ struct MappedImage {
     endianness: foreign::Endianness,
     previous: Option<foreign::Endianness>,
     file_types: Vec<foreign::FileType>,
+    platform: Option<foreign::Platform>,
+    elapsed: std::time::Duration,
     minimum_os: foreign::Version,
     // A rule on the field takes precedence over the map's entry for its type.
     #[wit(into = VersionParts)]
@@ -362,6 +384,8 @@ interface mapped {
     endianness: endianness,
     previous: option<endianness>,
     file-types: list<macho-value>,
+    platform: option<macho-value>,
+    elapsed: u64,
     minimum-os: string,
     sdk: version-parts,
     header-flags: u32,
@@ -383,8 +407,10 @@ interface mapped {
 /// A map states once how a foreign type is shown. Every field of such a type
 /// must then take that form without a rule of its own: as a field, inside
 /// `Option` and `Vec`, as a case payload and in a struct-like case. A rule on
-/// a field still wins, and a type the map does not name is left alone. A
-/// field that silently took another form would change the contract.
+/// a field still wins, and a type the map does not name is left alone. An
+/// entry that states its conversion needs no `From`: one conversion serves
+/// two types that share no trait, and another connects two types of other
+/// crates. A field that silently took another form would change the contract.
 #[test]
 fn a_declared_map_represents_foreign_types_wherever_they_appear() -> Result<(), Box<dyn Error>> {
     let mut schema = Schema::new("example:mapped@0.1.0".parse()?);

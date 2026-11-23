@@ -109,6 +109,9 @@
 //! }
 //! ```
 //!
+//! An entry converts through `From`, or states its conversion once for
+//! several types: `A | B => Shown with |value| …`.
+//!
 //! The crate names the map in its own `Cargo.toml`
 //! (`representations = "crate::Representations"`, with the `representations`
 //! feature); see [`representations!`](macro@representations). `usize` and
@@ -654,6 +657,22 @@ pub use wit_reflect_macros::named;
 /// `Shown: From<Foreign>`; a missing conversion is a compile error at the
 /// entry. [`rule::DisplayText`] is the shown type for a value's `Display`
 /// text.
+///
+/// An entry can state its conversion after `with`, and several foreign types
+/// separated by `|` can share one entry:
+///
+/// ```text
+/// object::macho::CpuType | object::macho::FileType => MachoValue
+///     with |value| MachoValue::new(value.into_inner(), value.name()),
+/// std::time::Duration => u64 with |duration| duration.as_secs(),
+/// ```
+///
+/// No `From` implementation is needed then. The conversion is written as
+/// `|value| expression` with one untyped name, or as the path of a function
+/// that takes the value. It is expanded once for each foreign type of its
+/// entry and checked for each: the types need no trait in common, only the
+/// functions the expression calls. It also connects two types of other
+/// crates, for which a crate cannot implement `From`.
 ///
 /// Entries stand in groups named after the crate their types come from, and
 /// an entry's path must begin with its group's name. The groups do nothing

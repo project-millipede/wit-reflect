@@ -93,7 +93,10 @@ representations! {
     pub Representations {
         foreign {
             foreign::Endianness => Endianness,
-            foreign::FileType => MachoValue,
+            foreign::FileType => MachoValue with |file_type| MachoValue {
+                value: file_type.into_inner(),
+                name: file_type.name().map(str::to_owned),
+            },
             foreign::Version => DisplayText,
             foreign::DecodeError => DisplayText,
         }
@@ -113,15 +116,6 @@ pub enum Endianness {
 pub struct MachoValue {
     pub value: u32,
     pub name: Option<String>,
-}
-
-impl From<foreign::FileType> for MachoValue {
-    fn from(file_type: foreign::FileType) -> Self {
-        Self {
-            value: file_type.into_inner(),
-            name: file_type.name().map(str::to_owned),
-        }
-    }
 }
 
 /// An input-file range.

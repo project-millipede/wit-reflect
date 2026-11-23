@@ -79,7 +79,7 @@ mod tests {
         let image = &report.images[0];
         // a map entry naming a `remote` enum
         assert!(matches!(image.endianness, Endianness::Little));
-        // a map entry converted through `From`, producing an unchanged value
+        // a map entry with a stated conversion, producing an unchanged value
         let file_type: &MachoValue = &image.file_type;
         assert_eq!(
             (file_type.value, file_type.name.as_deref()),
